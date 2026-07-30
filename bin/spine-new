@@ -12,7 +12,8 @@ Prints the path of the created file. Body is appended by the agent afterwards
 """
 import argparse, os, re, sys, secrets, time, datetime
 
-ROOT = os.path.expanduser("~/AgentMemory")
+ROOT = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
+TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _config_dir():
     """Same resolution order as spine-gen: SPINE_CONFIG_DIR, then the tools dir,
     then the vault. Keep these in sync — a divergence sends tools to different
@@ -20,8 +21,8 @@ def _config_dir():
     env = os.environ.get("SPINE_CONFIG_DIR")
     if env:
         return os.path.expanduser(env)
-    tools = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_TOOLS_DIR", "~/dev/memory-spine")))
-    vault = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
+    tools = TOOLS
+    vault = ROOT
     for c in (os.path.join(tools, "config"), os.path.join(vault, "config")):
         if os.path.isfile(os.path.join(c, "projects.txt")):
             return c
@@ -103,6 +104,8 @@ def main():
     ap.add_argument("--for-agent", dest="for_agent", default=None)
     ap.add_argument("--tag", action="append", default=[])
     ap.add_argument("--supersedes", default=None)
+    ap.add_argument("--allow-duplicate", action="store_true",
+                    help="write even when the dedup gate sees a probable duplicate")
     ap.add_argument("--replies-to", dest="replies_to", default=None)
     ap.add_argument("--summary", default=None)
     ap.add_argument("--body", default=None)
@@ -115,14 +118,25 @@ def main():
     a = ap.parse_args()
 
     # ACCESS GATE (third-party desktop agent incident, 2026-07-28):
-    # only approved callers may write to memory
-    sys.path.insert(0, os.path.expanduser("~/dev/memory-spine/lib"))
+    # only approved callers may write to memory. A broken/missing gate is
+    # FAIL-CLOSED; SPINE_NO_GATE=1 is the explicit opt-out for deliberately
+    # gateless installs (one stderr warning, then proceed).
+    gate_lib = os.path.join(TOOLS, "lib")
+    sys.path.insert(0, gate_lib)
     try:
         import spine_gate
+    except ImportError:
+        if os.environ.get("SPINE_NO_GATE") == "1":
+            sys.stderr.write("spine-new: WARNING: running without the access gate (SPINE_NO_GATE=1)\n")
+        else:
+            sys.stderr.write(
+                f"spine-new: ERROR: access gate not importable from {gate_lib} — refusing (fail-closed).\n"
+                "  Restore lib/spine_gate.py (or point SPINE_TOOLS_DIR at the tools repo),\n"
+                "  or set SPINE_NO_GATE=1 for a deliberately gateless install.\n")
+            sys.exit(1)
+    else:
         if not spine_gate.enforce("write", a.project, a.agent):
             sys.exit(2)
-    except ImportError:
-        sys.stderr.write("spine-new: access gate unavailable — allowing\n")
 
     if a.project not in PROJECTS:
         die(f"unknown project '{a.project}'. Valid: {', '.join(PROJECTS)}.\n"
@@ -185,8 +199,53 @@ def main():
     # sequences instead of real newlines — audit fix 2026-06-18)
     body = body.replace("\\n", "\n").replace("\\t", "\t")
     content = "\n".join(fm) + f"\n\n{body}\n\n## Relations\n- part_of [[{a.project}]]\n"
-    with open(path, "w") as f:
+
+    # DEDUP GATE (external review 2026-07-30: the README promised it, the code
+    # did not deliver). Cheap and honest: compare normalized title tokens
+    # against existing records of the same scope. Deliberate replacement passes
+    # via --supersedes; a conscious near-duplicate via --allow-duplicate.
+    if not a.supersedes and not a.allow_duplicate:
+        new_tokens = set(slugify(a.title).split("-"))
+        scope_dir = os.path.join(ROOT, a.project)
+        hits = []
+        for td in TYPES.values():
+            d = os.path.join(scope_dir, td)
+            if not os.path.isdir(d):
+                continue
+            for f in os.listdir(d):
+                m = re.match(r"^\d{4}-\d{2}-\d{2}--(.+)--[0-9A-HJKMNP-TV-Z]{26}\.md$", f)
+                if not m:
+                    continue
+                old_tokens = set(m.group(1).split("-"))
+                common = new_tokens & old_tokens
+                # strong overlap of meaningful tokens = probable duplicate
+                if len(common) >= 3 and len(common) >= 0.8 * min(len(new_tokens), len(old_tokens)):
+                    hits.append(os.path.join(td, f))
+        if hits:
+            die("probable duplicate of: " + "; ".join(hits[:3]) +
+                "\n  If this supersedes old knowledge: add --supersedes <ULID>."
+                "\n  If it is genuinely a different record: add --allow-duplicate.")
+
+    # SECRET SCAN BEFORE THE VAULT (same review): the scanner used to run only
+    # at commit time, so a secret value could sit in a plaintext file for
+    # minutes. Now the record is written to a temp file, scanned, and only a
+    # clean file is renamed into the vault — atomically, so no reader ever
+    # sees an unscanned record.
+    tmp_path = path + ".scanning"
+    with open(tmp_path, "w") as f:
         f.write(content)
+    lint = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spine-secrets-lint")
+    if os.path.exists(lint):
+        import subprocess
+        scan = subprocess.run([lint, tmp_path], capture_output=True, text=True)
+        if scan.returncode != 0:
+            os.unlink(tmp_path)
+            die("the record looks like it contains a SECRET VALUE — refused.\n"
+                + (scan.stdout or scan.stderr).strip()[:400] +
+                "\n  Store only the secret's name + location, never the value.")
+    else:
+        sys.stderr.write("spine-new: WARNING: spine-secrets-lint not found — writing unscanned\n")
+    os.replace(tmp_path, path)
 
     # BIRTH LEDGER (v3.4, owner decision 2026-07-04): every legitimate record birth
     # is registered in the ledger. spine-sync commits new records ONLY when their

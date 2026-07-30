@@ -7,8 +7,15 @@
 # v3.3 review: negative tests require a SPECIFIC exit code (1/2), not any
 # nonzero — otherwise a broken tool (127) produced a false PASS.
 set -u
-TOOLS="${SPINE_TOOLS_DIR:-$HOME/dev/memory-spine}"
-BIN="$TOOLS/bin"
+# The self-test exercises WRITE MECHANICS on arbitrary machines — including CI
+# runners whose process chains are rightly NOT in anyone's allowlist (caught on
+# 2026-07-30: the gate denied the runner and three tests failed for the wrong
+# reason, while refusal-shaped tests had been "passing" via gate denials).
+# SPINE_NO_GATE is the sanctioned escape; the gate's own refusal path is
+# production-proven via the access log.
+export SPINE_NO_GATE=1
+BIN="$(cd "$(dirname "$0")" && pwd)"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$HOME/Library/AgentMemory/Remotes}"
 BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
@@ -186,6 +193,62 @@ fi
 # T11: leftovers of previous selftests in the vault (a transient stuck after SIGKILL)
 LEFT=$(find "$ROOT" -name "selftest-*transient*" 2>/dev/null | grep -v "$VAULT_TMP" | grep -v "$VALID_TMP" | head -3)
 if [ -z "$LEFT" ]; then ok "T11 no leftover transient files"; else bad "T11 leftovers: $LEFT"; fi
+
+# T12: spine-new refuses a record whose body carries a secret VALUE (inline
+# scan before the vault — external review 2026-07-30: the README promised it,
+# the code did not deliver; a secret used to sit in plaintext until commit time)
+# The fixture token is assembled at runtime: a literal full-shape token in this
+# file would itself trip gitleaks on the repo (it did — caught by the release
+# lint on 2026-07-30). The prefix and tail never appear contiguously on disk.
+T12_TOK="ghp_"
+T12_TOK="${T12_TOK}0123456789abcdefghij0123456789abcdef"
+OUT12=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+  --title "selftest secret refusal transient" \
+  --body "leaked: $T12_TOK" 2>&1)
+if [ $? -ne 0 ] && echo "$OUT12" | grep -q "SECRET VALUE"; then
+  ok "T12 spine-new refuses a secret value inline"
+else
+  bad "T12 secret value was NOT refused: $(echo "$OUT12" | head -1)"
+  find "$ROOT/$FIRST_SCOPE" -name "*selftest-secret-refusal*" -delete 2>/dev/null
+fi
+
+# T13: the dedup gate refuses a near-duplicate title and points to the original;
+# --allow-duplicate is the conscious escape (same review)
+T13_TITLE="selftest dedup gate transient probe"
+# the base twin is a plain record: archived/private flags are (correctly)
+# rejected at creation time, which silently voided the first version of this test
+F13=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+  --title "$T13_TITLE" --body "twin base. [[$FIRST_SCOPE]]" 2>/dev/null | tail -1)
+[ -f "$F13" ] || bad "T13 setup: base twin was not created"
+OUT13=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+  --title "$T13_TITLE" --body "twin attempt" 2>&1)
+if [ $? -ne 0 ] && echo "$OUT13" | grep -q "probable duplicate"; then
+  ok "T13 dedup gate refuses a near-duplicate title"
+else
+  bad "T13 near-duplicate was NOT refused: $(echo "$OUT13" | head -1)"
+fi
+rm -f "$F13" 2>/dev/null
+find "$ROOT/$FIRST_SCOPE" -name "*selftest-dedup-gate-transient*" -delete 2>/dev/null
+
+# T14: a superseded record disappears from the packet (current view) while its
+# replacement stays (same review: "immutability piles up stale records")
+U14=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+  --title "selftest supersede old transient fact" --confidence verified \
+  --body "old knowledge. [[$FIRST_SCOPE]]" 2>/dev/null | tail -1)
+UID14=$(basename "$U14" | grep -oE "[0-9A-HJKMNP-TV-Z]{26}")
+N14=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+  --title "selftest supersede new transient fact" --confidence verified \
+  --supersedes "$UID14" --body "new knowledge. [[$FIRST_SCOPE]]" 2>/dev/null | tail -1)
+"$PY" "$BIN/spine-gen" >/dev/null 2>&1
+PK14="$ROOT/_index/packet-$FIRST_SCOPE.md"
+if grep -q "supersede new transient" "$PK14" 2>/dev/null && \
+   ! grep -q "supersede old transient" "$PK14" 2>/dev/null; then
+  ok "T14 superseded record hidden from the packet, replacement shipped"
+else
+  bad "T14 packet still ships the superseded record (or lost the replacement)"
+fi
+rm -f "$U14" "$N14" 2>/dev/null
+"$PY" "$BIN/spine-gen" >/dev/null 2>&1   # regenerate without the transients
 
 echo "selftest: PASS $PASS / FAIL $FAIL"
 [ "$FAIL" -eq 0 ]

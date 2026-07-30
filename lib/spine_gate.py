@@ -189,6 +189,13 @@ def _is_own_tool(entry):
 def check(action, scope=None, agent=None):
     """Returns (allowed: bool, human_message: str). Call BEFORE handing out data."""
     agent = agent or os.environ.get("SPINE_AGENT", "shared")
+    # SPINE_NO_GATE=1 — the single documented opt-out for deliberately gateless
+    # setups (and for self-tests on machines/CI runners whose process chains
+    # are rightly unknown). The bypass IS audit-logged, never silent.
+    if os.environ.get("SPINE_NO_GATE") == "1":
+        _log("ALLOW-NOGATE", action, scope, agent,
+             ["(gate disabled via SPINE_NO_GATE=1)"], "gate explicitly disabled")
+        return True, ""
     chain = caller_chain()
     hay = " ".join(chain).lower()
     allow, deny = _load_rules()

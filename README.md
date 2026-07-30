@@ -89,7 +89,7 @@ A third-party desktop app once picked up a global agent profile during onboardin
 
 ## Reliability
 
-- `spine-selftest` — a 13-test suite covering the write path, secret scanning, packet generation and gate rules.
+- `spine-selftest` — a 16-test suite covering the write path, inline secret refusal, the dedup gate, supersede semantics, packet generation and gate rules.
 - `spine-health` — starvation alerts (a scope shipping <35% or zero facts), sync-gap detection, backup staleness.
 - A **dead-letter queue** for notifications: undeliverable alerts are retried by the sync cycle within minutes, never lost.
 - Atomic writes, locks with TTL, log rotation, fail-closed preflight before any commit.

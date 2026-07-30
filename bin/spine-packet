@@ -18,7 +18,9 @@ received a packet injection (marker markers/last-fire-<scope>-<agent>; the
 agent comes from --agent or $SPINE_AGENT, default shared). An empty delta
 means "nothing happened" only relative to this agent's own marker. Manual
 inspection without resetting the baseline: --no-delta.
-Exit code: always 0 (fail-silent channel); problems go to stderr.
+Exit code: 0 on problems too (fail-silent channel; details on stderr) — with
+one exception: an unimportable access gate without SPINE_NO_GATE=1 exits 1
+(fail-closed).
 """
 import calendar
 import os
@@ -27,6 +29,7 @@ import sys
 import time
 
 HOME = os.path.expanduser("~")
+TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _config_dir():
@@ -34,7 +37,7 @@ def _config_dir():
     env = os.environ.get("SPINE_CONFIG_DIR")
     if env:
         return os.path.expanduser(env)
-    tools = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_TOOLS_DIR", "~/dev/memory-spine")))
+    tools = TOOLS
     vault = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
     for c in (os.path.join(tools, "config"), os.path.join(vault, "config")):
         if os.path.isfile(os.path.join(c, "projects.txt")):
@@ -253,14 +256,25 @@ def main():
         return 0
 
     # ACCESS GATE (third-party desktop agent incident, 2026-07-28):
-    # memory content goes only to approved callers
-    sys.path.insert(0, f"{HOME}/dev/memory-spine/lib")
+    # memory content goes only to approved callers. A broken/missing gate is
+    # FAIL-CLOSED; SPINE_NO_GATE=1 is the explicit opt-out for deliberately
+    # gateless installs (one stderr warning, then proceed).
+    gate_lib = os.path.join(TOOLS, "lib")
+    sys.path.insert(0, gate_lib)
     try:
         import spine_gate
+    except ImportError:
+        if os.environ.get("SPINE_NO_GATE") == "1":
+            sys.stderr.write("spine-packet: WARNING: running without the access gate (SPINE_NO_GATE=1)\n")
+        else:
+            sys.stderr.write(
+                f"spine-packet: ERROR: access gate not importable from {gate_lib} — refusing (fail-closed).\n"
+                "  Restore lib/spine_gate.py (or point SPINE_TOOLS_DIR at the tools repo),\n"
+                "  or set SPINE_NO_GATE=1 for a deliberately gateless install.\n")
+            return 1
+    else:
         if not spine_gate.enforce("read-packet", project, agent):
             return 0   # fail-silent for the injection channel: the session simply gets no packet
-    except ImportError:
-        sys.stderr.write("spine-packet: access gate unavailable (lib/spine_gate.py) — allowing\n")
 
     pk = os.path.join(PACKETS, f"packet-{project}.md")
     if not os.path.isfile(pk):

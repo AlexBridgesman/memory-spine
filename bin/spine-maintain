@@ -8,7 +8,7 @@
 set -u
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 BIN="$(cd "$(dirname "$0")" && pwd)"
-TOOLS="$(dirname "$BIN")"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
 LOGDIR="${SPINE_LOG_DIR:-$HOME/Library/Logs/AgentMemory}"
 mkdir -p "$LOGDIR"
 REPORT="$LOGDIR/maintain-$(date +%F).log"

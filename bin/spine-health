@@ -12,7 +12,7 @@ NOTES=""
 now=$(date +%s)
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 BIN="$(cd "$(dirname "$0")" && pwd)"
-TOOLS_DIR="$(dirname "$BIN")"
+TOOLS_DIR="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
 # External backup destination comes from config/backup.conf (see spine-backup);
 # unset = external backups are simply "not configured", a note rather than an alert.
 BK_CONF="${SPINE_BACKUP_CONF:-$TOOLS_DIR/config/backup.conf}"
@@ -308,7 +308,7 @@ if [ -n "$ALERTS" ]; then
     touch "$HA_MARK"
     SPINE_NO_DEADLETTER=1 "$BIN/spine-notify" "🚨 Memory Spine ALERT:$(echo -e "$ALERTS" | head -4 | tr '\n' ';') -- details in sync.log" 2>/dev/null
   else
-    /usr/bin/osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title (item 2 of argv)' -- "Check ~/Library/Logs/AgentMemory/sync.log" "Memory Spine: ALERT" 2>/dev/null
+    /usr/bin/osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title (item 2 of argv)' -- "Check $LOG" "Memory Spine: ALERT" 2>/dev/null
   fi
   exit 1
 fi

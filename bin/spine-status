@@ -18,13 +18,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(os.path.expanduser("~/AgentMemory")).resolve()
+ROOT = Path(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory"))).resolve()
+TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _config_dir():
     """Same resolution order as spine-gen (keep in sync)."""
     env = os.environ.get("SPINE_CONFIG_DIR")
     if env:
         return Path(os.path.expanduser(env))
-    tools = Path(os.path.expanduser(os.environ.get("SPINE_TOOLS_DIR", "~/dev/memory-spine")))
+    tools = Path(TOOLS)
     vault = Path(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
     for c in (tools / "config", vault / "config"):
         if (c / "projects.txt").is_file():
@@ -150,7 +151,7 @@ def main():
         return
 
     path.write_text(new_text, encoding="utf-8")
-    validator = Path(os.path.expanduser("~/dev/memory-spine/bin/spine-validate"))
+    validator = Path(os.path.dirname(os.path.abspath(__file__))) / "spine-validate"
     r = subprocess.run([str(validator), str(path)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     print(r.stdout, end="")
     if r.returncode != 0:

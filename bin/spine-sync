@@ -17,7 +17,7 @@ LOCK="$LOGDIR/.sync.lock"
 mkdir -p "$LOGDIR"
 # Typical full setup adds a local bare mirror as 'origin', e.g.:
 #   git init --bare "$HOME/Library/AgentMemory/Remotes/AgentMemory.git"
-#   git -C ~/AgentMemory remote add origin <that path>
+#   git -C "$ROOT" remote add origin <that path>
 # Without an origin remote, sync runs in local-only mode (commits, no push).
 REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$HOME/Library/AgentMemory/Remotes}"
 PRIMARY_BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"

@@ -11,6 +11,7 @@ set -u
 LOGDIR="$HOME/Library/Logs/AgentMemory"
 LOG="$LOGDIR/backup.log"
 BIN="$(cd "$(dirname "$0")" && pwd)"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
 SRC="${SPINE_ROOT:-$HOME/AgentMemory}/"
 mkdir -p "$LOGDIR"
 
@@ -18,7 +19,7 @@ mkdir -p "$LOGDIR"
 # Copy config/backup.conf.example to config/backup.conf and set EXTERNAL_VOLUME.
 # Empty/missing config = external backups are skipped softly with an INFO log;
 # everything else (health check, weekly maintenance) still runs.
-CONF="${SPINE_BACKUP_CONF:-$(dirname "$BIN")/config/backup.conf}"
+CONF="${SPINE_BACKUP_CONF:-$TOOLS/config/backup.conf}"
 EXTERNAL_VOLUME=""
 [ -f "$CONF" ] && EXTERNAL_VOLUME=$(sed -n 's/^EXTERNAL_VOLUME=//p' "$CONF" | head -1 | tr -d ' ')
 DSTROOT="${SPINE_BACKUP_SNAPSHOT_ROOT:-/Volumes/$EXTERNAL_VOLUME/Backups/AgentMemory}"

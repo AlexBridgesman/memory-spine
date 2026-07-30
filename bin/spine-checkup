@@ -5,8 +5,8 @@
 # Usage: spine-checkup ["message prefix"]
 export LANG="${LANG:-en_US.UTF-8}"   # keep UTF-8 in osascript banners regardless of the launchd environment (2026-07-05)
 set -u
-TOOLS="${SPINE_TOOLS_DIR:-$HOME/dev/memory-spine}"
-BIN="$TOOLS/bin"
+BIN="$(cd "$(dirname "$0")" && pwd)"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 LOGDIR="${SPINE_LOG_DIR:-$HOME/Library/Logs/AgentMemory}"
 PREFIX="${1:-Spine checkup}"

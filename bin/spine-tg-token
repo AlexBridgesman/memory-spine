@@ -33,7 +33,8 @@
 #   spine-tg-token --status      # diagnostics WITHOUT the value (rc 0 = token obtainable)
 set -u
 BIN="$(cd "$(dirname "$0")" && pwd)"
-CONF="${SPINE_NOTIFY_CONF:-$(dirname "$BIN")/config/notify.conf}"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
+CONF="${SPINE_NOTIFY_CONF:-$TOOLS/config/notify.conf}"
 KC_SVC="memory-spine/TELEGRAM_BOT_TOKEN"   # generic service name; matches notify.conf.example
 KC_ACCT="${USER:-memory-spine}"
 LOGDIR="$HOME/Library/Logs/AgentMemory"

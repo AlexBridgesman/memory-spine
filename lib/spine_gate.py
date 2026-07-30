@@ -10,7 +10,7 @@ to expose memory.
 Threat model, honestly:
   + catches: agent runtimes and apps that RUN spine-* tools
     (exactly the incident above; this is the realistic vector for LLM agents)
-  - does NOT catch: an arbitrary `cat ~/AgentMemory/...` by any user process —
+  - does NOT catch: an arbitrary `cat` of vault files by any user process —
     the vault remains a plain directory. That is why rule #1 (never store
     secret VALUES in memory) stays the primary defense, not this gate.
 
@@ -23,7 +23,7 @@ import subprocess
 import time
 
 HOME = os.path.expanduser("~")
-TOOLS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CFG = os.path.join(TOOLS, "config")
 ALLOWLIST = os.path.join(CFG, "agent-allowlist.tsv")
 LOGDIR = os.environ.get("SPINE_LOG_DIR", f"{HOME}/Library/Logs/AgentMemory")

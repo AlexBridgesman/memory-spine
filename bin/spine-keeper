@@ -29,10 +29,10 @@ import urllib.parse
 import urllib.request
 
 HOME = os.path.expanduser("~")
-TOOLS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(TOOLS, "bin")
 CONF = os.path.join(TOOLS, "config", "notify.conf")
-ROOT = os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory"))
+ROOT = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
 LOGDIR = os.environ.get("SPINE_LOG_DIR", f"{HOME}/Library/Logs/AgentMemory")
 LOG = os.path.join(LOGDIR, "keeper.log")
 ULID_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")

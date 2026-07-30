@@ -8,7 +8,7 @@ INDEX, entities) are skipped as OK.
 import os, re, sys
 
 ROOT = os.path.realpath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
-TOOLS = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_TOOLS_DIR", "~/dev/memory-spine")))
+TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _config_dir():

@@ -3,7 +3,8 @@
 set -u
 FAIL=0
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
-TOOLS="${SPINE_TOOLS_DIR:-$HOME/dev/memory-spine}"
+BIN="$(cd "$(dirname "$0")" && pwd)"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
 REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$HOME/Library/AgentMemory/Remotes}"
 PRIMARY_BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
 # Optional marker file proving the external backup volume is mounted

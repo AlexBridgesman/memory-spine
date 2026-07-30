@@ -29,9 +29,9 @@ import subprocess
 import sys
 import time
 
-ROOT = os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory"))
+ROOT = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
 BIN = os.path.dirname(os.path.abspath(__file__))
-TOOLS = os.path.dirname(BIN)
+TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(BIN)
 # The scope dictionary is the tools-repo config (the controlled vocabulary
 # read by spine-new/status/promote) — triage appends to that SAME file.
 PROJECTS_TXT = os.path.join(TOOLS, "config", "projects.txt")

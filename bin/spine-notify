@@ -21,7 +21,8 @@ export LANG="${LANG:-en_US.UTF-8}"
 # there as a value -- only token_cmd, the command that prints it).
 set -u
 BIN="$(cd "$(dirname "$0")" && pwd)"
-CONF="${SPINE_NOTIFY_CONF:-$(dirname "$BIN")/config/notify.conf}"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
+CONF="${SPINE_NOTIFY_CONF:-$TOOLS/config/notify.conf}"
 LOGDIR="$HOME/Library/Logs/AgentMemory"
 LOG="$LOGDIR/notify.log"
 DEADLETTER="$LOGDIR/notify-deadletter.log"   # lost TG messages (drained by spine-sync / spine-health)

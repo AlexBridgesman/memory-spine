@@ -16,9 +16,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Plain gitleaks over the whole checked-out history instead of
+      # gitleaks-action: the action derives a commit range as <first>^..<last>,
+      # which explodes on an initial push whose first commit has no parent.
+      - name: Scan the entire history
+        run: >
+          docker run --rm -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.24.3
+          git --no-banner /repo
 
   selftest:
     name: spine-selftest (macOS)

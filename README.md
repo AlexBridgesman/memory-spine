@@ -104,7 +104,7 @@ A third-party desktop app once picked up a global agent profile during onboardin
 
 ## Agent integration
 
-- **Claude Code:** `spine-hook-sessionstart` injects the packet automatically (SessionStart hook); `spine-hook-stop` reminds about unsaved checkpoints.
+- **Claude Code:** merge `config/claude-settings-hooks.json.example` into your `~/.claude/settings.json` — `spine-hook-sessionstart` then injects the packet automatically at session start, and `spine-hook-stop` reminds about unsaved checkpoints.
 - **Any other agent:** first action of a session = run `spine-packet <scope>`. Hand the agent `AGENT_INSTALL_PROMPT.md` and it can install and verify the whole system itself.
 - **Humans:** the vault opens in Obsidian as a live wikilink graph — every record a dot, every scope a cluster.
 

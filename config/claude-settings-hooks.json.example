@@ -1,0 +1,28 @@
+{
+  "_comment": "Claude Code integration: merge the 'hooks' block into ~/.claude/settings.json (replace HOME with your absolute home path — settings.json does not expand ~). SessionStart injects the scope packet into every session; Stop reminds about unsaved checkpoints.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash HOME/dev/memory-spine/bin/spine-hook-sessionstart",
+            "timeout": 5,
+            "statusMessage": "Memory Spine packet"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash HOME/dev/memory-spine/bin/spine-hook-stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

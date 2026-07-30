@@ -1,0 +1,310 @@
+#!/bin/bash
+# spine-maintain — the mechanical maintenance loop (NO LLM required). Run it
+# weekly (e.g. from the spine-backup chain or a launchd/cron job) or manually.
+# Checks: INDEX regen, broken [[wikilinks]], orphans, suspect-stale records,
+# secret scan (git history + tree), git fsck of the working repo and bare
+# mirrors, artifact file:// links, backup snapshot age, delegate promotions,
+# selftest. Writes a report + sends a notification when problems are found.
+set -u
+ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+BIN="$(cd "$(dirname "$0")" && pwd)"
+TOOLS="$(dirname "$BIN")"
+LOGDIR="${SPINE_LOG_DIR:-$HOME/Library/Logs/AgentMemory}"
+mkdir -p "$LOGDIR"
+REPORT="$LOGDIR/maintain-$(date +%F).log"
+
+# Optional owner config (config/maintain.conf — see maintain.conf.example):
+#   AGENT_CMD      — command for the OPTIONAL agent-assisted summary of this
+#                    report, e.g.: AGENT_CMD="claude -p"  (any agent CLI that
+#                    accepts the prompt as an argument). Unset = purely
+#                    mechanical run; nothing below depends on an LLM.
+#   MAINTAIN_AGENT — agent label recorded on delegate promotions
+#                    (default: claude-code).
+[ -f "$TOOLS/config/maintain.conf" ] && . "$TOOLS/config/maintain.conf"
+
+# External backup volume (config/backup.conf, shared with spine-backup):
+#   EXTERNAL_VOLUME — volume name under /Volumes; empty = external checks skipped.
+[ -f "$TOOLS/config/backup.conf" ] && . "$TOOLS/config/backup.conf"
+EXTERNAL_VOLUME="${EXTERNAL_VOLUME:-}"
+REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$HOME/Library/AgentMemory/Remotes}"
+AGENT_BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
+TOOLS_BARE="${SPINE_TOOLS_BARE:-$REMOTE_ROOT/memory-spine.git}"
+if [ -n "$EXTERNAL_VOLUME" ]; then
+  VOLPREFIX="/Volumes/$EXTERNAL_VOLUME/"
+  BACKUP_MARKER="${SPINE_BACKUP_MARKER:-/Volumes/$EXTERNAL_VOLUME/AgentMemory/.mounted}"
+  SNAPROOT="${SPINE_BACKUP_SNAPSHOT_ROOT:-/Volumes/$EXTERNAL_VOLUME/AgentMemory-Backups}"
+else
+  VOLPREFIX=""
+  BACKUP_MARKER="${SPINE_BACKUP_MARKER:-}"
+  SNAPROOT="${SPINE_BACKUP_SNAPSHOT_ROOT:-}"
+fi
+ISSUES=0
+GIT="${SPINE_GIT:-}"
+if [ -z "$GIT" ]; then
+  for candidate in /opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git; do
+    [ -x "$candidate" ] && { GIT="$candidate"; break; }
+  done
+fi
+GITLEAKS="${SPINE_GITLEAKS:-}"
+if [ -z "$GITLEAKS" ]; then
+  for candidate in "$(command -v gitleaks 2>/dev/null)" /opt/homebrew/bin/gitleaks /usr/local/bin/gitleaks; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] && { GITLEAKS="$candidate"; break; }
+  done
+fi
+say() { echo "$*" >> "$REPORT"; }
+problem() { ISSUES=$((ISSUES+1)); say "PROBLEM: $*"; }
+
+say "=== spine-maintain (mechanical) $(date '+%F %T') ==="
+
+# 1) regen INDEX/packet
+"$BIN/spine-gen" >> "$REPORT" 2>&1 || problem "spine-gen failed"
+
+# 2) broken wikilinks + orphans (a record without a single [[link]])
+/usr/bin/python3 - "$ROOT" >> "$REPORT" 2>&1 << 'PYEOF'
+import os, re, sys
+from collections import defaultdict
+root = sys.argv[1]
+names = set()
+for dp, _, fs in os.walk(root):
+    if "/_index" in dp or "/.git" in dp or "/.obsidian" in dp: continue
+    for f in fs:
+        if f.endswith(".md"): names.add(os.path.splitext(f)[0])
+prefix_index = defaultdict(set)
+for name in names:
+    # Records end with ---ULID. Allow a wikilink to the stable human slug only
+    # when it resolves to exactly one record; otherwise report as broken.
+    if "---" in name:
+        prefix_index[name.rsplit("---", 1)[0]].add(name)
+broken = orphans = 0
+RECORD_DIRS = ("/decisions/", "/facts/", "/threads/", "/artifacts/", "/entities/")
+for dp, _, fs in os.walk(root):
+    if "/_index" in dp or "/.git" in dp or "/.obsidian" in dp: continue
+    for f in fs:
+        if not f.endswith(".md"): continue
+        path_tag = dp + "/"
+        # link hygiene applies only to records and hubs; README/RUNBOOK/INDEX are documentation
+        if not any(t in path_tag for t in RECORD_DIRS) and f != os.path.basename(dp) + ".md":
+            continue
+        text = open(os.path.join(dp, f), encoding="utf-8", errors="replace").read()
+        links = re.findall(r"\[\[([^\]|#]+)", text)
+        rec = "/decisions/" in dp+"/" or "/facts/" in dp+"/" or "/threads/" in dp+"/" or "/artifacts/" in dp+"/"
+        if rec and not links:
+            print(f"  orphan (no links): {dp}/{f}"); orphans += 1
+        for l in links:
+            target = l.strip()
+            if target.startswith(":"):
+                continue  # a POSIX class from a shell regex in the body ([[:space:]]) is not a wikilink
+            # a bare ULID = the canonical reference to a record: it resolves
+            # when exactly one file ends with --<ULID>
+            if re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", target):
+                if sum(1 for n in names if n.endswith("--" + target)) == 1:
+                    continue
+            prefix_matches = prefix_index.get(target, set())
+            if target not in names and len(prefix_matches) != 1:
+                print(f"  broken link [[{target}]] in {f}"); broken += 1
+print(f"wikilinks: broken {broken}, orphans {orphans}")
+if broken or orphans: sys.exit(1)
+PYEOF
+[ $? -ne 0 ] && problem "broken links/orphans present (see above)"
+
+# 3) suspect-stale: open records with no activity for > 21 days (report only)
+STALE=$(find "$ROOT" \( -path "*/threads/*" -o -path "*/decisions/*" \) -name "*.md" -mtime +21 -exec grep -l "^status: \(active\|blocked\)" {} \; 2>/dev/null | wc -l | tr -d ' ')
+say "suspect-stale (>21 d, active/blocked): $STALE"
+
+# 3b) decay control: facts older than 90 days without re-verification are
+# candidates for a re-check (a stale "fact" is worse than a missing one);
+# report only
+say "--- facts >90 d (by created, not mtime) for re-verification ---"
+/usr/bin/python3 - "$ROOT" >> "$REPORT" 2>&1 << 'RVEOF'
+import os, re, sys, datetime
+root = sys.argv[1]
+cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)).strftime("%Y-%m-%d")
+n = 0
+for dp, _, fs in os.walk(root):
+    if "/facts" not in dp or "/.git" in dp: continue
+    for f in fs:
+        if not f.endswith(".md"): continue
+        try: text = open(os.path.join(dp, f), encoding="utf-8", errors="replace").read(4096)
+        except OSError: continue
+        mc = re.search(r"^created:\s*(\d{4}-\d{2}-\d{2})", text, re.M)
+        ms = re.search(r"^status:\s*active\s*$", text, re.M)
+        if mc and ms and mc.group(1) < cutoff:
+            print(f"  reverify: {f}"); n += 1
+print(f"facts to re-verify: {n}")
+RVEOF
+
+# 3c) empty bodies >1 day old. Nuance: a fact whose summary is self-sufficient
+# (>=100 chars) is a COMPLETE record — the body would only duplicate the
+# summary, so it is NOT a problem. Flag only real gaps: an empty body AND a
+# short/missing summary; for decisions/threads the body is always valuable.
+EB=0
+while read -r f; do
+  # closed records (resolved/archived/superseded) are not back-filled — do not heal the dead
+  grep -qE '^status: (resolved|archived|superseded)' "$f" && continue
+  td=$(echo "$f" | grep -oE '/(decisions|facts|threads|artifacts)/' | tr -d '/')
+  sumlen=$(grep -m1 '^summary:' "$f" | sed 's/^summary: *"//; s/"$//' | wc -m | tr -d ' ')
+  # a fact/artifact with a rich summary (>=100) is self-sufficient — skip
+  if { [ "$td" = "facts" ] || [ "$td" = "artifacts" ]; } && [ "${sumlen:-0}" -ge 100 ]; then
+    continue
+  fi
+  say "  empty body (real gap): $(basename "$f")"; EB=$((EB+1))
+done < <(find "$ROOT" \( -path "*/decisions/*" -o -path "*/facts/*" -o -path "*/threads/*" -o -path "*/artifacts/*" \) -name "*.md" -mtime +1 -exec grep -l "(body — to be filled in)" {} \; 2>/dev/null)
+[ "$EB" -gt 0 ] && problem "$EB record(s) with an empty body AND a short summary for >1 day (fill in or supersede)"
+
+# 4) secret scan: full git history + the whole tree including git-ignored files
+# (reports must NEVER land inside the vault!)
+cd "$ROOT"
+if [ -n "$GITLEAKS" ]; then
+  "$GITLEAKS" git --redact --no-banner . >> "$REPORT" 2>&1 || problem "gitleaks: findings in git history!"
+  "$GITLEAKS" dir --redact --no-banner "$ROOT" >> "$REPORT" 2>&1 || problem "gitleaks dir: findings in the tree (incl. git-ignored)!"
+else
+  say "WARN: gitleaks not installed — falling back to the prose lint (no history scan)"
+  if [ -x "$BIN/spine-secrets-lint" ]; then
+    find "$ROOT" -name "*.md" -not -path "*/.git/*" -print0 | xargs -0 "$BIN/spine-secrets-lint" >> "$REPORT" 2>&1 || problem "spine-secrets-lint: suspected secrets in the tree!"
+  fi
+fi
+
+# 5) git fsck of the working repo + bare mirrors. Bare mirrors are created by
+# spine-backup; a default install has none — skip quietly unless the path was
+# configured explicitly.
+fsck_repo() {  # $1=path $2=explicit(0/1) $3=name
+  if [ ! -e "$1" ]; then
+    if [ "$2" = "1" ]; then problem "fsck: $3 unavailable: $1"; else say "fsck skipped: no $3 at $1"; fi
+    return
+  fi
+  if "$GIT" -C "$1" fsck --no-progress >> "$REPORT" 2>&1; then say "fsck OK: $1"; else problem "fsck FAIL: $1"; fi
+}
+fsck_repo "$ROOT" 1 "memory root"
+fsck_repo "$AGENT_BARE" "$([ -n "${SPINE_AGENT_BARE:-}" ] && echo 1 || echo 0)" "vault bare mirror"
+fsck_repo "$TOOLS_BARE" "$([ -n "${SPINE_TOOLS_BARE:-}" ] && echo 1 || echo 0)" "tools bare mirror"
+
+# 6) artifact file:// links must exist (links onto an offline external backup
+# volume are skipped, not flagged)
+/usr/bin/python3 - "$ROOT" "$BACKUP_MARKER" "$VOLPREFIX" >> "$REPORT" 2>&1 << 'PYEOF'
+import os, re, sys
+from urllib.parse import unquote
+root = sys.argv[1]
+backup_marker = sys.argv[2]
+volprefix = sys.argv[3]
+external_backup_online = (backup_marker and os.path.exists(backup_marker)) or (volprefix and os.path.isdir(volprefix))
+bad = skipped_external = 0
+for dp, _, fs in os.walk(root):
+    if "/artifacts/" not in dp + "/": continue
+    for f in fs:
+        if not f.endswith(".md"): continue
+        text = open(os.path.join(dp,f), errors="replace").read()
+        for m in re.findall(r"file://(/[^\s\)\]`]+)", text):
+            raw = m.rstrip("`'\".,;")
+            path = unquote(raw)
+            if volprefix and path.startswith(volprefix) and not external_backup_online:
+                skipped_external += 1
+                continue
+            if not os.path.exists(path): print(f"  broken artifact link {raw} in {f}"); bad += 1
+print(f"artifact links broken: {bad}; external-backup-offline skipped: {skipped_external}")
+sys.exit(1 if bad else 0)
+PYEOF
+[ $? -ne 0 ] && problem "broken artifact file:// links"
+
+# 7) age of the latest backup snapshot
+# Note: the mtime of a SNAP-* directory is unreliable after rsync — prefer the
+# .snapshot-created stamp, else parse the date from the directory name.
+SNAP=""
+if [ -n "$SNAPROOT" ] && { [ -f "$BACKUP_MARKER" ] || [ -d "$SNAPROOT" ]; }; then
+  for snap in "$SNAPROOT"/SNAP-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
+    [ -d "$snap" ] || continue
+    if [ -z "$SNAP" ] || [[ "${snap##*/}" > "${SNAP##*/}" ]]; then
+      SNAP="$snap"
+    fi
+  done
+  if [ -n "$SNAP" ]; then
+    if [ -f "$SNAP/.snapshot-created" ]; then
+      SNAP_TS=$(cat "$SNAP/.snapshot-created" 2>/dev/null || echo 0)
+    else
+      SNAP_DATE=${SNAP##*/SNAP-}
+      SNAP_TS=$(/bin/date -j -f "%Y-%m-%d" "$SNAP_DATE" "+%s" 2>/dev/null || stat -f %m "$SNAP")
+    fi
+    case "$SNAP_TS" in ''|*[!0-9]*) SNAP_TS=$(stat -f %m "$SNAP") ;; esac
+    AGE_D=$(( ( $(date +%s) - SNAP_TS ) / 86400 ))
+    [ "$AGE_D" -gt 2 ] && problem "snapshot older than 2 days ($SNAP)" || say "snapshot fresh: $SNAP"
+  else
+    problem "no snapshots found"
+  fi
+else
+  say "external backup volume offline/not configured; snapshot age check skipped"
+fi
+
+# 7b) delegate rules for auto-promotions — mechanical, NO LLM: a title regex +
+# age threshold -> spine-promote (the maintenance gate). Rules live in
+# config/promotion-delegates.tsv (added only by the owner; format:
+# title-regex<TAB>target-confidence<TAB>min-age-days).
+say "--- delegate promotions ---"
+/usr/bin/python3 - "$ROOT" "$TOOLS" "${MAINTAIN_AGENT:-claude-code}" >> "$REPORT" 2>&1 << 'DLEOF'
+import os, re, sys, glob, subprocess, datetime
+root, tools, agent = sys.argv[1], sys.argv[2], sys.argv[3]
+rules = []
+conf_path = os.path.join(tools, "config", "promotion-delegates.tsv")
+if os.path.exists(conf_path):
+    for line in open(conf_path, encoding="utf-8"):
+        line = line.rstrip("\n")
+        if not line or line.startswith("#"): continue
+        parts = line.split("\t")
+        if len(parts) == 3:
+            rules.append((re.compile(parts[0], re.I), parts[1].strip(), int(parts[2])))
+if not rules:
+    print("no delegate rules"); sys.exit(0)
+now = datetime.datetime.now(datetime.timezone.utc)
+promoted = 0
+for p in glob.glob(os.path.join(root, "*", "facts", "*.md")):
+    if "/inbox/" in p: continue   # drafts are NOT promoted before triage
+    text = open(p, encoding="utf-8", errors="replace").read(4096)
+    if not re.search(r"^confidence:\s*candidate\s*$", text, re.M): continue
+    if not re.search(r"^status:\s*active\s*$", text, re.M): continue
+    mt = re.search(r'^title:\s*"?(.*?)"?\s*$', text, re.M)
+    mc = re.search(r"^created:\s*(\d{4}-\d{2}-\d{2})", text, re.M)
+    if not mt or not mc: continue
+    try:
+        age = (now - datetime.datetime.strptime(mc.group(1), "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)).days
+    except ValueError:
+        continue
+    for rx, target, min_age in rules:
+        if age >= min_age and rx.search(mt.group(1)):
+            r = subprocess.run([os.path.join(tools, "bin", "spine-promote"), p,
+                                "--confidence", target, "--agent", agent,
+                                "--reason", f"delegate rule '{rx.pattern[:40]}' (owner policy), age {age} d"],
+                               capture_output=True, text=True)
+            print(r.stdout.strip() or r.stderr.strip())
+            if r.returncode == 0: promoted += 1
+            break
+print(f"promoted by delegates: {promoted}")
+DLEOF
+
+# 8) selftest — the memory's own CI: the protective layers are verified in fact
+# every week, not assumed
+if [ -x "$BIN/spine-selftest" ]; then
+  if "$BIN/spine-selftest" >> "$REPORT" 2>&1; then
+    say "selftest: PASS"
+  else
+    problem "selftest FAIL — see above"
+  fi
+else
+  say "WARN: spine-selftest not installed; skipped"
+fi
+
+# 9) OPTIONAL agent-assisted summary — runs only when the owner configured
+# AGENT_CMD in config/maintain.conf; the mechanical loop above never needs it.
+# Example (maintain.conf):  AGENT_CMD="claude -p"
+# makes the call below effectively:  claude -p "<prompt with the report>"
+if [ -n "${AGENT_CMD:-}" ] && [ "$ISSUES" -gt 0 ]; then
+  say "--- agent-assisted summary (AGENT_CMD) ---"
+  PROMPT="Summarize this Memory Spine maintenance report in at most 10 lines and propose a concrete fix for every problem found:
+$(cat "$REPORT")"
+  $AGENT_CMD "$PROMPT" >> "$REPORT" 2>&1 || say "agent call failed (non-fatal; the mechanical results above stand)"
+fi
+
+say "=== summary: $ISSUES problem(s) ==="
+if [ "$ISSUES" -gt 0 ] && [ -x "$BIN/spine-notify" ]; then
+  "$BIN/spine-notify" "Maintenance: $ISSUES problem(s) — see $REPORT" 2>/dev/null
+fi
+# report rotation: keep the 8 most recent
+ls -t "$LOGDIR"/maintain-*.log 2>/dev/null | tail -n +9 | xargs rm -f 2>/dev/null
+exit 0

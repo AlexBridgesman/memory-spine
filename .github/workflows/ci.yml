@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: gitleaks (full history)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  selftest:
+    name: spine-selftest (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The self-test is fail-closed by design: it refuses to pass when the
+      # secret scanner is missing, so CI must provide it.
+      - name: Install gitleaks
+        run: brew install gitleaks
+
+      - name: Install into a scratch HOME
+        run: |
+          set -euo pipefail
+          echo "SPINE_HOME=$RUNNER_TEMP/spine-home" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/spine-home"
+          HOME="$RUNNER_TEMP/spine-home" ./install.sh --yes
+
+      # T9 compares the vault against its local bare mirror; a fresh install has
+      # no remote at all, so create the mirror the same way the docs describe.
+      - name: Create the local bare mirror
+        run: |
+          set -euo pipefail
+          export HOME="$SPINE_HOME"
+          BARE="$HOME/Library/AgentMemory/Remotes/AgentMemory.git"
+          mkdir -p "$(dirname "$BARE")"
+          git init --bare "$BARE"
+          git -C "$HOME/AgentMemory" remote add origin "$BARE"
+          git -C "$HOME/AgentMemory" push -u origin main
+
+      - name: Run the self-test
+        run: |
+          set -euo pipefail
+          export HOME="$SPINE_HOME"
+          "$HOME/dev/memory-spine/bin/spine-selftest"
+
+      - name: Preflight must pass on a clean install
+        run: |
+          set -euo pipefail
+          export HOME="$SPINE_HOME"
+          "$HOME/dev/memory-spine/bin/spine-preflight"

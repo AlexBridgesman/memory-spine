@@ -1,0 +1,17 @@
+#!/bin/bash
+# One-shot checkpoint reminder: fires once on REMIND_DATE, then self-destructs
+# (unloads and deletes its own launchd plist so it never fires again).
+# Use case: a date you must not miss (e.g. a model deprecation) — the reminder
+# tells you to ask your agent for a memory checkpoint before it hits.
+# Pair with a launchd plist labeled ai.spine.checkpoint-remind (see
+# launchd/*.plist.template for the pattern; run this script daily).
+REMIND_DATE="${SPINE_REMIND_DATE:-2099-01-01}"   # set your date (YYYY-MM-DD)
+[ "$(date +%Y-%m-%d)" = "$REMIND_DATE" ] || exit 0
+/usr/bin/osascript -e 'display notification "Tell your agent: make a Memory Spine checkpoint now." with title "Memory Spine: CHECKPOINT TODAY" sound name "Glass"' 2>/dev/null
+LOGDIR="${SPINE_LOG_DIR:-$HOME/Library/Logs/AgentMemory}"
+mkdir -p "$LOGDIR" 2>/dev/null
+echo "$(date '+%F %T') checkpoint reminder fired" >> "$LOGDIR/sync.log"
+# self-destruct: unload in the background + a delayed rm — a foreground unload
+# would kill this very script's launchd job before it could clean up after itself
+launchctl unload ~/Library/LaunchAgents/ai.spine.checkpoint-remind.plist 2>/dev/null &
+sleep 2 && rm -f ~/Library/LaunchAgents/ai.spine.checkpoint-remind.plist

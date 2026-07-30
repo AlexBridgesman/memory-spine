@@ -1,0 +1,14 @@
+# Optional settings for spine-maintain. Copy to maintain.conf to activate.
+# The maintenance loop is fully mechanical by default — nothing here is required.
+
+# AGENT_CMD — command for the OPTIONAL agent-assisted summary of the weekly
+# maintenance report (runs only when problems were found). The command receives
+# the whole prompt as a single argument. Leave unset for a purely mechanical run.
+# Examples:
+#   AGENT_CMD="claude -p"
+#   AGENT_CMD="my-agent-cli --prompt"
+#AGENT_CMD=
+
+# MAINTAIN_AGENT — agent label recorded on delegate promotions
+# (should exist in the vault's config/agents.txt). Default: claude-code.
+#MAINTAIN_AGENT=claude-code

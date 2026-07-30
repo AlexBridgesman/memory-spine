@@ -1,0 +1,472 @@
+#!/usr/bin/env python3
+"""spine-keeper — deterministic Telegram steward for the memory vault.
+
+DETERMINISTIC (no LLM): owner commands are mapped to sanctioned Spine tools,
+nothing else. The bot token is NEVER stored in a file: config/notify.conf
+holds `token_cmd` — a command that prints the token (Keychain, 1Password CLI,
+pass, ...). Allowlist: ONLY the numeric user id from notify.conf
+(`allowlist=`; the id is not a secret); an empty allowlist = ignore everyone
+(no TOFU pairing).
+
+Commands (in Telegram):
+  status / digest        — "what awaits a decision" summary
+  recall <query>         — memory search (top 5)
+  triage                 — inbox report (with inline buttons)
+  triage merge <scope> <group>     — run a merge
+  triage new-scope <name> <group>  — create a new project
+  triage archive <group> | discard <group>
+  promote <ULID>         — promotion to reported (verified — only from a local session)
+  delta <scope>          — what is new in a scope
+  help                   — this list
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+
+HOME = os.path.expanduser("~")
+TOOLS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BIN = os.path.join(TOOLS, "bin")
+CONF = os.path.join(TOOLS, "config", "notify.conf")
+ROOT = os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory"))
+LOGDIR = os.environ.get("SPINE_LOG_DIR", f"{HOME}/Library/Logs/AgentMemory")
+LOG = os.path.join(LOGDIR, "keeper.log")
+ULID_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+
+
+def log(msg):
+    os.makedirs(LOGDIR, exist_ok=True)
+    with open(LOG, "a") as f:
+        f.write(f"{time.strftime('%F %T')} {msg}\n")
+
+
+def get_token():
+    """Bot token via `token_cmd` from notify.conf — a command that prints it.
+    The token value never lives in any file (rule #1: no secret values, ever).
+
+    Production lesson: calling a secret-manager CLI on EVERY poll cycle is a
+    trap — when the manager cannot authenticate non-interactively it may fall
+    back to a GUI prompt (an OS permission dialog / app unlock) and hang the
+    daemon at night. Point token_cmd at a fast local cache (e.g. Keychain) and
+    refresh from the canonical store only on failure (see refresh_cmd)."""
+    cmd = conf_get("token_cmd")
+    if not cmd:
+        return ""
+    try:
+        r = subprocess.run(["/bin/sh", "-c", cmd],
+                           capture_output=True, text=True, timeout=30)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def refresh_token():
+    """The cached token went stale (rotation / 401) — refresh from the
+    canonical store. Optional `refresh_cmd` in notify.conf (e.g. a command
+    that invalidates a Keychain cache and re-reads the secret manager);
+    afterwards token_cmd is retried."""
+    cmd = conf_get("refresh_cmd")
+    try:
+        if cmd:
+            subprocess.run(["/bin/sh", "-c", cmd], capture_output=True, timeout=30)
+    except Exception:
+        pass
+    return get_token()
+
+
+def get_token_blocking():
+    """Backoff instead of a crash loop: offline / secret manager unavailable ->
+    wait, do not hammer."""
+    delay = 30
+    warned = False
+    while True:
+        tok = get_token()
+        if tok:
+            return tok
+        log(f"token empty (cache + canonical store) — retrying in {delay}s")
+        if not warned and delay >= 240:
+            subprocess.run(["/usr/bin/osascript", "-e",
+                            'display notification "keeper cannot obtain the bot token (secret manager/network?)" with title "Memory Spine: keeper"'],
+                           capture_output=True)
+            warned = True
+        time.sleep(delay)
+        delay = min(delay * 2, 900)
+
+
+def conf_get(key):
+    if not os.path.exists(CONF):
+        return ""
+    for line in open(CONF):
+        if line.startswith(key + "="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def conf_set(key, value):
+    lines = []
+    found = False
+    if os.path.exists(CONF):
+        for line in open(CONF):
+            if line.startswith(key + "="):
+                lines.append(f"{key}={value}\n")
+                found = True
+            else:
+                lines.append(line)
+    if not found:
+        lines.append(f"{key}={value}\n")
+    with open(CONF, "w") as f:
+        f.writelines(lines)
+
+
+def api(tok, method, **params):
+    url = f"https://api.telegram.org/bot{tok}/{method}"
+    data = urllib.parse.urlencode(params).encode()
+    try:
+        with urllib.request.urlopen(url, data, timeout=70) as r:
+            return json.load(r)
+    except Exception as e:
+        log(f"api {method} FAIL: {type(e).__name__}: {e}")
+        return {"ok": False}
+
+
+def send(tok, chat_id, text):
+    while text:
+        chunk = text[:3800]
+        if len(text) > 3800:
+            nl = chunk.rfind("\n")
+            if nl > 2000:
+                chunk = chunk[:nl]
+        api(tok, "sendMessage", chat_id=chat_id, text=chunk,
+            disable_web_page_preview="true")
+        text = text[len(chunk):].lstrip("\n")
+
+
+def run_tool(args, timeout=120):
+    env = dict(os.environ)
+    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + env.get("PATH", "/usr/bin:/bin")
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
+        out = (r.stdout + ("\n" + r.stderr if r.returncode != 0 else "")).strip()
+        return out or f"(empty output, rc={r.returncode})"
+    except subprocess.TimeoutExpired:
+        return f"⏱ the tool did not respond within {timeout}s"
+
+
+TRIAGE_STATE = os.path.join(LOGDIR, ".keeper-triage-groups.json")
+SCOPE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}$")
+NO_SCOPE = "(no proposed_scope)"   # must match the spine-triage placeholder
+
+
+def triage_groups():
+    """Inbox groups by proposed_scope (the same logic as the spine-triage report)."""
+    root = os.path.join(ROOT, "inbox")
+    groups = {}
+    for td in ("decisions", "facts", "threads", "artifacts"):
+        d = os.path.join(root, td)
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".md"):
+                continue
+            try:
+                head = open(os.path.join(d, fn), encoding="utf-8", errors="replace").read(2048)
+            except OSError:
+                continue
+            if not re.search(r"^status:\s*(active|blocked)\s*$", head, re.M):
+                continue
+            m = re.search(r'^proposed_scope:\s*"?(.*?)"?\s*$', head, re.M)
+            g = (m.group(1) if m else "") or NO_SCOPE
+            t = re.search(r'^title:\s*"?(.*?)"?\s*$', head, re.M)
+            groups.setdefault(g, []).append(t.group(1) if t else fn)
+    return groups
+
+
+def slug_scope(name):
+    s = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")[:30]
+    return s if SCOPE_RE.fullmatch(s or "") else ""
+
+
+def send_triage_buttons(tok, chat_id):
+    groups = triage_groups()
+    if not groups:
+        send(tok, chat_id, "inbox is empty — no triage needed ✨")
+        return
+    names = sorted(groups)
+    json.dump({"ts": time.time(), "groups": names}, open(TRIAGE_STATE, "w"))
+    for i, g in enumerate(names):
+        titles = groups[g]
+        n = len(titles)
+        # owner review 2026-07-18: a button acts on the WHOLE topic — show ALL
+        # records (it used to silently show [:5]) and state explicitly how many
+        # a single tap will archive/move
+        shown = titles[:10]
+        lines = "\n".join(f"• {t[:80]}" for t in shown)
+        if n > len(shown):
+            lines += f"\n… and {n - len(shown)} more record(s)"
+        suffix = f" (all {n})" if n > 1 else ""
+        kb = {"inline_keyboard": [[
+            {"text": f"📁 New project{suffix}", "callback_data": f"t:n:{i}"},
+            {"text": f"➡️ Into existing{suffix}", "callback_data": f"t:m:{i}"},
+        ], [
+            {"text": f"🗄 Archive{suffix}", "callback_data": f"t:a:{i}"},
+            {"text": f"🗑 Delete{suffix}", "callback_data": f"t:d:{i}"},
+        ]]}
+        warn = f"\n⚠️ One button applies to ALL {n} records of this topic at once." if n > 1 else ""
+        api(tok, "sendMessage", chat_id=chat_id,
+            text=f"📥 Topic: \"{g}\" — {n} record(s){warn}\n{lines}",
+            reply_markup=json.dumps(kb))
+
+
+def _merge_scopes():
+    return [l.strip() for l in open(os.path.join(TOOLS, "config", "projects.txt"))
+            if l.strip() and not l.startswith("#") and l.strip() != "inbox"]
+
+
+def _merge_kb(gi, scopes, sel):
+    """Multi-select keyboard: a check mark + ordinal on selected entries; the
+    first selected = the record's home."""
+    rows = []
+    for j, sc in enumerate(scopes):
+        label = (f"✅ {sc} ({sel.index(sc) + 1})" if sc in sel else sc)
+        rows.append([{"text": label, "callback_data": f"t:M:{gi}:{j}"}])
+    done = "✔️ Done"
+    if sel:
+        done += f" -> {sel[0]}" + (f" +{len(sel) - 1}" if len(sel) > 1 else "")
+    rows.append([{"text": done, "callback_data": f"t:G:{gi}"},
+                 {"text": "✖️ Cancel", "callback_data": f"t:X:{gi}"}])
+    return {"inline_keyboard": rows}
+
+
+def handle_callback(tok, cq):
+    data = cq.get("data", "")
+    chat_id = cq.get("message", {}).get("chat", {}).get("id")
+    api(tok, "answerCallbackQuery", callback_query_id=cq.get("id", ""))
+    parts = data.split(":")
+    if not chat_id or len(parts) < 3 or parts[0] != "t":
+        return
+    try:
+        state = json.load(open(TRIAGE_STATE))
+        group = state["groups"][int(parts[2])]
+    except Exception:
+        send(tok, chat_id, "triage state is stale — send \"triage\" again")
+        return
+    act = parts[1]
+    reason = "Telegram button (owner)"
+    if act == "n":
+        name = slug_scope(group)
+        if not name:
+            send(tok, chat_id, f"cannot derive a scope name from \"{group}\" — send: triage new-scope <name> {group}")
+            return
+        send(tok, chat_id, f"⏳ creating project \"{name}\"...")
+        out = run_tool([os.path.join(BIN, "spine-triage"), "new-scope", name, group,
+                        "--reason", reason], timeout=300)
+        send(tok, chat_id, out[-1500:] + f"\n✅ Project \"{name}\" created. (Remember: the tools-repo dictionary is committed manually.)")
+    elif act == "m":
+        # multi-select (a topic can belong to several projects, and picking just
+        # one loses shared visibility): toggle buttons, the first selected =
+        # the record's "home", the rest go into also:
+        scopes = _merge_scopes()
+        state.setdefault("sel", {})[parts[2]] = []
+        json.dump(state, open(TRIAGE_STATE, "w"))
+        api(tok, "sendMessage", chat_id=chat_id,
+            text=(f"Where should \"{group}\" go? You can pick SEVERAL: tap them in order "
+                  f"(the first = the record's home, the rest get shared visibility), then ✔️ Done."),
+            reply_markup=json.dumps(_merge_kb(parts[2], scopes, [])))
+    elif act == "M":
+        scopes = _merge_scopes()
+        try:
+            sc = scopes[int(parts[3])]
+        except Exception:
+            send(tok, chat_id, "did not catch the target — send \"triage\" again")
+            return
+        sel = state.setdefault("sel", {}).setdefault(parts[2], [])
+        if sc in sel:
+            sel.remove(sc)
+        else:
+            sel.append(sc)
+        json.dump(state, open(TRIAGE_STATE, "w"))
+        mid = cq.get("message", {}).get("message_id")
+        if mid:
+            api(tok, "editMessageReplyMarkup", chat_id=chat_id, message_id=mid,
+                reply_markup=json.dumps(_merge_kb(parts[2], scopes, sel)))
+    elif act == "G":
+        sel = state.get("sel", {}).get(parts[2], [])
+        if not sel:
+            send(tok, chat_id, "nothing selected — pick at least one project")
+            return
+        send(tok, chat_id, f"⏳ moving \"{group}\" -> {sel[0]}"
+             + (f" (+also: {', '.join(sel[1:])})" if len(sel) > 1 else "") + "...")
+        out = run_tool([os.path.join(BIN, "spine-triage"), "merge", ",".join(sel), group,
+                        "--reason", reason], timeout=300)
+        send(tok, chat_id, out[-1500:])
+    elif act == "X":
+        state.get("sel", {}).pop(parts[2], None)
+        json.dump(state, open(TRIAGE_STATE, "w"))
+        mid = cq.get("message", {}).get("message_id")
+        if mid:
+            api(tok, "editMessageReplyMarkup", chat_id=chat_id, message_id=mid,
+                reply_markup=json.dumps({"inline_keyboard": []}))
+    elif act == "a":
+        out = run_tool([os.path.join(BIN, "spine-triage"), "archive", group,
+                        "--reason", reason], timeout=300)
+        send(tok, chat_id, "🗄 " + out[-1200:])
+    elif act == "d":
+        kb = {"inline_keyboard": [[{"text": "🗑 Yes, delete forever", "callback_data": f"t:D:{parts[2]}"}]]}
+        api(tok, "sendMessage", chat_id=chat_id,
+            text=f"Really delete \"{group}\"? (git history keeps the trace, but it disappears from memory)",
+            reply_markup=json.dumps(kb))
+    elif act == "D":
+        out = run_tool([os.path.join(BIN, "spine-triage"), "discard", group,
+                        "--reason", reason], timeout=300)
+        send(tok, chat_id, "🗑 " + out[-1200:])
+
+
+def handle(text):
+    """Owner command -> a sanctioned tool. Returns the reply."""
+    t = text.strip()
+    low = t.lower()
+    if low in ("status", "digest", "/start", "start"):
+        run_tool([os.path.join(BIN, "spine-digest"), "--force"])   # the digest sends itself via notify
+        return "✅ digest sent (separate message above/below)"
+    if low.startswith("recall "):
+        q = t[7:].strip()
+        return run_tool([os.path.join(BIN, "spine-recall"), q, "--limit", "5"])
+    if low == "triage":
+        return run_tool([os.path.join(BIN, "spine-triage")])
+    m = re.match(r"triage\s+(merge|new-scope|archive|discard)\s+(.+)", low)
+    if m:
+        action = m.group(1)
+        rest = t.split(None, 2)[2]  # original letter case
+        # merge/new-scope: 2 positional args; archive/discard: the selector WHOLE
+        parts = rest.split(None, 1) if action in ("merge", "new-scope") else [rest]
+        cmd = [os.path.join(BIN, "spine-triage"), action] + parts + \
+              ["--reason", "owner command via keeper (Telegram)"]
+        return run_tool(cmd, timeout=300)
+    m = re.match(r"promote\s+(\S+)\s*(\S*)", low)
+    if m:
+        ulid = m.group(1).upper()
+        if not ULID_RE.fullmatch(ulid):
+            return "promote: give a ULID (26 chars) — find it via recall"
+        if m.group(2) == "verified":
+            return ("via keeper, promotion goes only to reported (security: Telegram is not a local session).\n"
+                    "verified — from a session on the machine: spine-promote " + ulid + " --confidence verified")
+        return run_tool([os.path.join(BIN, "spine-promote"), ulid, "--confidence", "reported",
+                         "--agent", "user",
+                         "--reason", "keeper command (Telegram channel; verified only from a local session)"])
+    m = re.match(r"delta\s+([a-z0-9-]+)", low)
+    if m:
+        env = dict(os.environ, SPINE_AGENT="keeper-tg")
+        r = subprocess.run([os.path.join(BIN, "spine-packet"), "--project", m.group(1)],
+                           capture_output=True, text=True, env=env, timeout=60)
+        out = r.stdout.strip()
+        d = out.find("--- DELTA")
+        return out[d:] if d >= 0 else "no delta — nothing new since last time"
+    if low in ("help", "?"):
+        return ("Commands: status · recall <query> · triage · "
+                "triage merge|new-scope|archive|discard <args> · "
+                "promote <ULID> (->reported; verified only locally) · delta <scope> · help")
+    return "did not understand. Send \"help\" for the command list (I am a deterministic bot, not an LLM)"
+
+
+def main():
+    # single instance: a second keeper = a war over getUpdates
+    lock = os.path.join(LOGDIR, ".keeper.lock")
+    os.makedirs(LOGDIR, exist_ok=True)
+    try:
+        os.mkdir(lock)
+        open(f"{lock}/pid", "w").write(str(os.getpid()))
+    except FileExistsError:
+        try:
+            other = int(open(f"{lock}/pid").read().strip())
+            os.kill(other, 0)
+            log(f"another keeper is alive (pid {other}) — exiting")
+            sys.exit(0)
+        except (OSError, ValueError):
+            log("stale keeper lock — breaking it")
+            open(f"{lock}/pid", "w").write(str(os.getpid()))
+    import atexit
+    atexit.register(lambda: (os.path.exists(f"{lock}/pid") and os.remove(f"{lock}/pid"),
+                             os.path.exists(lock) and os.rmdir(lock)))
+
+    tok = get_token_blocking()
+    owner = conf_get("allowlist")
+    chat = conf_get("chat_id")
+    if not owner:
+        # NO TOFU: an empty owner binds no one — set allowlist= explicitly
+        log("owner is NOT configured — commands are ignored; set allowlist= in notify.conf manually")
+        subprocess.run(["/usr/bin/osascript", "-e",
+                        'display notification "keeper has no owner: fill allowlist= in notify.conf" with title "Memory Spine: keeper"'],
+                       capture_output=True)
+    off_file = os.path.join(LOGDIR, ".keeper-offset")
+    offset = 0
+    try:
+        offset = int(open(off_file).read().strip())
+    except (OSError, ValueError):
+        pass
+    log(f"keeper start (owner={'set' if owner else 'MISSING'}, offset={offset})")
+    fails = 0
+    last_refresh = 0.0
+    while True:
+        upd = api(tok, "getUpdates", offset=offset, timeout=50)
+        if not upd.get("ok"):
+            # 3 consecutive failures may mean token rotation (401), not the
+            # network: try refreshing the cache, but at most once per 5 min —
+            # do not hammer the secret store with a dead token
+            fails += 1
+            if fails >= 3 and time.time() - last_refresh > 300:
+                last_refresh = time.time()
+                fresh = refresh_token()
+                if fresh and fresh != tok:
+                    tok = fresh
+                    log("token refreshed from the canonical store (getUpdates failed 3 times in a row)")
+                fails = 0
+            time.sleep(10)
+            continue
+        fails = 0
+        for u in upd.get("result", []):
+            offset = u["update_id"] + 1
+            try:
+                open(off_file, "w").write(str(offset))   # a restart must not replay commands
+            except OSError:
+                pass
+            cq = u.get("callback_query")
+            if cq:
+                if str(cq.get("from", {}).get("id", "")) == owner:
+                    log(f"button: {cq.get('data','')}")
+                    try:
+                        handle_callback(tok, cq)
+                    except Exception as e:
+                        log(f"callback FAIL: {e}")
+                continue
+            msg = u.get("message") or {}
+            frm = msg.get("from", {})
+            uid = str(frm.get("id", ""))
+            text = msg.get("text", "")
+            if not uid or not text:
+                continue
+            if msg.get("chat", {}).get("type") != "private":
+                log(f"IGNORED non-private chat: {msg.get('chat', {}).get('id')}")
+                continue
+            if not owner or uid != owner:
+                log(f"IGNORED unauthorized: {uid} (@{frm.get('username','?')}): {text[:50]}")
+                continue
+            log(f"cmd: {text[:100]}")
+            if text.strip().lower() == "triage":
+                send_triage_buttons(tok, msg["chat"]["id"])
+                continue
+            try:
+                reply = handle(text)
+            except Exception as e:
+                reply = f"error: {type(e).__name__}: {e}"
+                log(f"handle FAIL: {e}")
+            if len(reply) > 7600:
+                reply = reply[:7600] + f"\n…(truncated, full output is {len(reply)} chars — see it on the machine)"
+            send(tok, msg["chat"]["id"], reply)
+
+
+if __name__ == "__main__":
+    main()

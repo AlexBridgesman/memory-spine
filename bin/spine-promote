@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""spine-promote — sanctioned confidence transition (promotion gate, v3.1 plan, section "confidence").
+
+Raising confidence above candidate is allowed ONLY to: the owner, the
+maintenance loop, or an agent in a session where the owner explicitly
+confirmed the record (--reviewed-by-owner sets reviewed_by/reviewed_at).
+This is the ONLY sanctioned editor of confidence on existing records
+(the analog of spine-status for status).
+
+Usage:
+  spine-promote <path-or-ULID> --confidence reported|verified [--reviewed-by-owner]
+                --agent claude-code --reason "why" [--dry-run]
+
+Edits only: the `confidence:` line, (optionally) adds `reviewed_by`/`reviewed_at`,
+and appends one line to `## Status history`. Does not commit — spine-sync does.
+"""
+import argparse
+import datetime
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(os.path.expanduser("~/AgentMemory")).resolve()
+def _config_dir():
+    """Same resolution order as spine-gen (keep in sync)."""
+    env = os.environ.get("SPINE_CONFIG_DIR")
+    if env:
+        return Path(os.path.expanduser(env))
+    tools = Path(os.path.expanduser(os.environ.get("SPINE_TOOLS_DIR", "~/dev/memory-spine")))
+    vault = Path(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
+    for c in (tools / "config", vault / "config"):
+        if (c / "projects.txt").is_file():
+            return c
+    return tools / "config"
+
+
+CFG = _config_dir()
+LEVELS = ["candidate", "reported", "verified", "legacy", "untrusted"]
+PROMOTABLE_TO = ["reported", "verified"]
+ULID_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+
+
+def _load_list(name):
+    path = CFG / name
+    try:
+        items = [l.strip() for l in path.read_text().splitlines()
+                 if l.strip() and not l.lstrip().startswith("#")]
+    except OSError:
+        sys.exit(f"spine-promote: dictionary missing: {path}")
+    return items
+
+
+AGENTS = _load_list("agents.txt")
+PROJECTS = set(_load_list("projects.txt"))
+TYPEDIRS = {"decisions", "facts", "threads", "artifacts"}
+
+
+def die(msg, code=1):
+    sys.stderr.write(f"spine-promote: ERROR: {msg}\n")
+    sys.exit(code)
+
+
+def is_record_path(path: Path) -> bool:
+    try:
+        rel = path.resolve().relative_to(ROOT)
+    except ValueError:
+        return False
+    parts = rel.parts
+    return len(parts) == 3 and parts[0] in PROJECTS and parts[1] in TYPEDIRS and parts[2].endswith(".md")
+
+
+def resolve_target(target: str) -> Path:
+    if ULID_RE.fullmatch(target):
+        matches = [p for p in ROOT.glob(f"*/*/*{target}*.md") if is_record_path(p)]
+        if not matches:
+            die(f"ULID not found: {target}")
+        if len(matches) > 1:
+            die("ULID is not unique: " + ", ".join(str(p) for p in matches))
+        return matches[0]
+    p = Path(os.path.expanduser(target)).resolve()
+    if not p.exists():
+        die(f"file does not exist: {p}")
+    if not is_record_path(p):
+        die(f"not an AgentMemory record path: {p}")
+    return p
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("target")
+    ap.add_argument("--confidence", required=True, choices=PROMOTABLE_TO)
+    ap.add_argument("--agent", default=os.environ.get("SPINE_AGENT", "claude-code"), choices=AGENTS)
+    ap.add_argument("--reason", required=True)
+    ap.add_argument("--reviewed-by-owner", dest="reviewed_by_owner", action="store_true",
+                    help="the owner confirmed in THIS session -> set reviewed_by/reviewed_at")
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+
+    if "\n" in a.reason or "\r" in a.reason:
+        die("--reason must not contain a newline")
+    clean_reason = a.reason.strip()
+    if not clean_reason:
+        die("--reason is empty")
+
+    path = resolve_target(a.target)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    m = re.search(r"^confidence:\s*(\S+)\s*$", text, re.M)
+    current = m.group(1) if m else "(missing)"
+    if current == a.confidence:
+        print(f"NOOP: {path} already confidence={a.confidence}")
+        return
+    if current not in ("candidate", "legacy", "(missing)"):
+        die(f"promotion is only possible from candidate/legacy; current: {current}")
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    today = now.date().isoformat()
+    ts = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if m:
+        new_text = re.sub(r"^confidence:\s*\S+\s*$", f"confidence: {a.confidence}", text, count=1, flags=re.M)
+    else:
+        new_text = re.sub(r"^(sensitivity:.*)$", rf"\1\nconfidence: {a.confidence}", text, count=1, flags=re.M)
+    if a.reviewed_by_owner and "reviewed_by:" not in new_text:
+        new_text = re.sub(r"^(confidence:.*)$",
+                          rf"\1\nreviewed_by: owner\nreviewed_at: {today}",
+                          new_text, count=1, flags=re.M)
+
+    hist = f"- {ts} — {a.agent}: confidence {current} -> {a.confidence}. Reason: {clean_reason}"
+    if "\n## Status history\n" in new_text:
+        new_text = new_text.rstrip() + "\n" + hist + "\n"
+    else:
+        new_text = new_text.rstrip() + "\n\n## Status history\n" + hist + "\n"
+
+    if a.dry_run:
+        print(f"DRY-RUN: {path}: {current} -> {a.confidence}")
+        return
+
+    path.write_text(new_text, encoding="utf-8")
+    validator = os.path.expanduser("~/dev/memory-spine/bin/spine-validate")
+    r = subprocess.run([validator, str(path)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    print(r.stdout, end="")
+    if r.returncode != 0:
+        die(f"validation failed after the promotion — resolve manually: {path}", code=2)
+    print(f"PROMOTED: {path.name}: {current} -> {a.confidence}"
+          + (" (+reviewed_by: owner)" if a.reviewed_by_owner else ""))
+
+
+if __name__ == "__main__":
+    main()

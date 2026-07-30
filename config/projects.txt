@@ -1,0 +1,8 @@
+# Memory Spine scope dictionary — the SINGLE source of truth
+# (read by spine-new/gen/validate/status/triage).
+# One line = one scope. Adding a new scope = a line here + folders/hub in the vault —
+# done only by the owner or spine-triage (controlled vocabulary).
+personal
+work
+ai-infra
+inbox

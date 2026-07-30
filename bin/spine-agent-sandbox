@@ -1,0 +1,96 @@
+#!/bin/bash
+# spine-agent-sandbox — an isolated home for a third-party agent app.
+#
+# LESSON FROM A REAL INCIDENT (2026-07-28): a third-party desktop app picked up
+# a global agent profile during onboarding and read the memory packet.
+# "Connect a model" inside someone else's app = handing it your ENTIRE
+# Codex/Claude profile (projects, plugins, MCP connectors, sandbox grants —
+# and, through them, memory). An isolated home breaks that inheritance: the
+# app gets a clean profile with no plugins, no connectors and no access to the
+# memory vault.
+#
+# Usage:
+#   spine-agent-sandbox <app-name>      # create the home + show how to launch
+#   spine-agent-sandbox --list          # existing sandboxes
+set -u
+ROOT="$HOME/agent-sandboxes"
+MEMORY_ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+
+if [ "${1:-}" = "--list" ]; then
+  echo "=== AGENT SANDBOXES ($ROOT)"
+  [ -d "$ROOT" ] || { echo "  (none)"; exit 0; }
+  for d in "$ROOT"/*/; do
+    [ -d "$d" ] || continue
+    n=$(basename "$d")
+    echo "  * $n   created $(date -r "$d" '+%F')"
+  done
+  exit 0
+fi
+
+NAME="${1:-}"
+[ -n "$NAME" ] || { echo "usage: spine-agent-sandbox <app-name> | --list" >&2; exit 1; }
+case "$NAME" in
+  *[!a-zA-Z0-9._-]*) echo "spine-agent-sandbox: name may contain only a-z 0-9 . _ -" >&2; exit 1;;
+esac
+
+BOX="$ROOT/$NAME"
+CX="$BOX/codex-home"
+CC="$BOX/claude-home"
+mkdir -p "$CX" "$CC" || exit 1
+
+# --- Codex: a minimal config. The key part — NO memory vault in writable_roots,
+# no mcp_servers, no plugins; only the app's own working folder.
+if [ ! -f "$CX/config.toml" ]; then
+cat > "$CX/config.toml" << EOF
+# Isolated Codex profile for "${NAME}" (spine-agent-sandbox, $(date +%F)).
+# Do NOT add the memory vault, connectors or plugins here — the whole point of
+# this home is that a third-party app does NOT inherit the owner's working
+# environment.
+model = "gpt-5.6-sol"
+
+[features]
+memories = false
+
+[sandbox_workspace_write]
+writable_roots = ["$BOX/workspace"]
+EOF
+fi
+mkdir -p "$BOX/workspace"
+
+# --- Claude Code: an empty profile (no MCP; verified 2026-07-28 — with
+# CLAUDE_CONFIG_DIR set it reports "No MCP servers configured" vs 5 in the
+# global profile).
+[ -f "$CC/.claude.json" ] || echo '{}' > "$CC/.claude.json"
+
+cat > "$BOX/LAUNCH.md" << EOF
+# Agent sandbox "${NAME}"
+
+Launch the app ONLY with these variables — otherwise it will again see the
+owner's working profile (projects, plugins, connectors, memory):
+
+    CODEX_HOME="$CX" CLAUDE_CONFIG_DIR="$CC" open -a "$NAME"
+
+or in a terminal before launching a CLI:
+
+    export CODEX_HOME="$CX"
+    export CLAUDE_CONFIG_DIR="$CC"
+
+What is inside:
+- codex-home/config.toml — no MCP, no plugins, memories=false,
+  writes only to $BOX/workspace (NOT to $MEMORY_ROOT)
+- claude-home/ — an empty profile, 0 MCP servers
+- workspace/ — the only folder the app may write to
+
+Memory access: DENIED by default (default-deny gate).
+If this app genuinely needs memory — the owner decides explicitly:
+    spine-approve "<path fragment of the app>" "$NAME"
+EOF
+
+echo "Sandbox ready: $BOX"
+echo
+echo "Launch the app like this:"
+echo "  CODEX_HOME=\"$CX\" CLAUDE_CONFIG_DIR=\"$CC\" open -a \"$NAME\""
+echo
+echo "Memory access for it is DENIED (default-deny gate)."
+echo "Grant it deliberately: spine-approve \"<path fragment>\" \"$NAME\""
+echo "Details: $BOX/LAUNCH.md"

@@ -1,0 +1,28 @@
+# Memory Spine — gitleaks config (extends the default ruleset)
+title = "MemorySpine"
+
+[extend]
+useDefault = true
+
+# Custom rules — ONLY token formats missing from the default ruleset.
+
+[[rules]]
+id = "matrix-synapse-access-token"
+description = "Matrix/Synapse access token (syt_)"
+regex = '''syt_[A-Za-z0-9]+_[A-Za-z0-9]+_[A-Za-z0-9]+'''
+
+[[rules]]
+id = "anthropic-oauth-token"
+description = "Anthropic OAuth/refresh token (sk-ant-oat01/ort01)"
+regex = '''sk-ant-o[ar]t01-[A-Za-z0-9_\-]{20,}'''
+
+[[rules]]
+id = "duckdns-token"
+description = "DuckDNS token in URL"
+regex = '''duckdns\.org/update.*token=[a-f0-9\-]{8,}'''
+
+[allowlist]
+description = "Bare ULIDs (full match) used as record IDs"
+regexes = [
+  '''^[0-9A-HJKMNP-TV-Z]{26}$''',
+]

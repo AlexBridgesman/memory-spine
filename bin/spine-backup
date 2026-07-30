@@ -1,0 +1,167 @@
+#!/bin/bash
+# spine-backup -- nightly / on-mount rsync snapshot of the vault to an external
+# volume: /Volumes/<EXTERNAL_VOLUME>/Backups/AgentMemory/SNAP-<date>,
+# plus the weekly maintenance chain (5a mechanical + 5b LLM curation), which
+# runs INDEPENDENTLY of the disk. Lesson from a past audit: maintenance once
+# lived inside the "disk is mounted" branch and silently skipped for weeks.
+# Suggested schedule: launchd label ai.spine.backup, nightly (see launchd/);
+# optionally a StartOnMount variant for plug-in-and-back-up workflows.
+export LANG="${LANG:-en_US.UTF-8}"   # UTF-8 so non-ASCII text in banners survives launchd's minimal environment
+set -u
+LOGDIR="$HOME/Library/Logs/AgentMemory"
+LOG="$LOGDIR/backup.log"
+BIN="$(cd "$(dirname "$0")" && pwd)"
+SRC="${SPINE_ROOT:-$HOME/AgentMemory}/"
+mkdir -p "$LOGDIR"
+
+# The external volume name is machine-specific -> it lives in config, not code.
+# Copy config/backup.conf.example to config/backup.conf and set EXTERNAL_VOLUME.
+# Empty/missing config = external backups are skipped softly with an INFO log;
+# everything else (health check, weekly maintenance) still runs.
+CONF="${SPINE_BACKUP_CONF:-$(dirname "$BIN")/config/backup.conf}"
+EXTERNAL_VOLUME=""
+[ -f "$CONF" ] && EXTERNAL_VOLUME=$(sed -n 's/^EXTERNAL_VOLUME=//p' "$CONF" | head -1 | tr -d ' ')
+DSTROOT="${SPINE_BACKUP_SNAPSHOT_ROOT:-/Volumes/$EXTERNAL_VOLUME/Backups/AgentMemory}"
+# Optional marker file (SPINE_BACKUP_MARKER): when set, it beats a bare
+# directory check -- it distinguishes the real disk from a stale empty mount
+# point (or a different disk) that happens to carry the same name.
+MOUNTED="${SPINE_BACKUP_MARKER:-}"
+
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+# BSD (macOS) stat first, GNU stat as fallback so cron/systemd on Linux works too
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+fsize() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null; }
+fmt_day() { date -r "$1" '+%F' 2>/dev/null || date -d "@$1" '+%F' 2>/dev/null || echo "$1"; }
+
+volume_mounted() {
+  if [ -n "$MOUNTED" ]; then
+    [ -f "$MOUNTED" ]
+  elif [ -n "$EXTERNAL_VOLUME" ]; then
+    [ -d "/Volumes/$EXTERNAL_VOLUME" ]
+  else
+    [ -d "$(dirname "$DSTROOT")" ]   # SPINE_BACKUP_SNAPSHOT_ROOT-only setups
+  fi
+}
+
+# rotate this script's own log (dated, keep 5 archives)
+if [ -f "$LOG" ] && [ "$(fsize "$LOG" || echo 0)" -gt 2097152 ]; then
+  mv "$LOG" "$LOG.$(date +%Y%m%d%H%M%S)" 2>/dev/null
+  ls -t "$LOG".* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null
+fi
+
+# Weekly maintenance: 5a mechanical + 5b LLM curation (report-only by default).
+# Due-based cadence (not "Sundays only"): if the last run was >= 6.5 days ago,
+# it is time. Called at the END of the script, after the snapshot branch, but
+# it does NOT depend on the disk being present.
+run_maintenance_if_due() {
+  local MMARK="$LOGDIR/.last-maintain" now last
+  now=$(date +%s)
+  last=0
+  [ -f "$MMARK" ] && last=$(cat "$MMARK" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ "${SPINE_FORCE_MAINTAIN:-}" = "1" ] || [ $((now - last)) -ge 561600 ]; then
+    if [ ! -x "$BIN/spine-maintain" ] && [ ! -x "$BIN/spine-maintain-5b" ]; then
+      log "maintenance due, but no spine-maintain / spine-maintain-5b installed -- skipping"
+      return 0
+    fi
+    # Lock against parallel curation runs. Lesson: a manual force run and a
+    # StartOnMount trigger once started TWO 5a+5b passes at the same time --
+    # the second overwrote the first's report and doubled the LLM work.
+    MLOCK="$LOGDIR/.maintain.lock"
+    if ! mkdir "$MLOCK" 2>/dev/null; then
+      ml_age=$(( now - $(mtime "$MLOCK" || echo "$now") ))
+      if [ "$ml_age" -lt 3600 ]; then
+        log "maintenance SKIP: another curation run is in progress (lock ${ml_age}s)"
+        return 0
+      fi
+      log "maintenance: breaking a stale lock (${ml_age}s)"
+      rmdir "$MLOCK" 2>/dev/null; mkdir "$MLOCK" 2>/dev/null || return 0
+    fi
+    trap 'rmdir "$MLOCK" 2>/dev/null' RETURN
+    log "maintenance due (last: $( [ "$last" -gt 0 ] && fmt_day "$last" || echo 'never')) -- running 5a+5b"
+    # Update the marker ONLY when everything succeeded. Lesson: an
+    # unconditional marker muted the "maintenance has not run" health alert
+    # while 5b was failing systematically.
+    local ok=1
+    if [ -x "$BIN/spine-maintain" ]; then "$BIN/spine-maintain" || ok=0; fi
+    if [ -x "$BIN/spine-maintain-5b" ]; then "$BIN/spine-maintain-5b" || ok=0; fi
+    if [ "$ok" = 1 ]; then
+      date +%s > "$MMARK"
+    else
+      log "ALERT: maintenance FAIL -- .last-maintain NOT updated (health will alert after >8 days)"
+    fi
+  fi
+}
+
+if [ -z "$EXTERNAL_VOLUME" ] && [ -z "${SPINE_BACKUP_SNAPSHOT_ROOT:-}" ] && [ -z "$MOUNTED" ]; then
+  log "INFO: external backup not configured (set EXTERNAL_VOLUME in $CONF) -- skipping snapshot; health + maintenance still run"
+  "$BIN/spine-health"
+  run_maintenance_if_due
+  exit 0
+fi
+
+if ! volume_mounted; then
+  log "SKIP: backup volume not mounted -- external backup skipped, the primary local history keeps working"
+  "$BIN/spine-health"
+  run_maintenance_if_due
+  exit 0
+fi
+
+SNAP="$DSTROOT/SNAP-$(date +%F)"
+
+# Debounce the StartOnMount storm (a past audit counted 6 launches within
+# 12 minutes of a single plug-in): if today's snapshot was created < 1h ago,
+# do not run rsync again.
+if [ -f "$SNAP/.snapshot-created" ] && [ "${SPINE_FORCE_BACKUP:-}" != "1" ]; then
+  created=$(cat "$SNAP/.snapshot-created" 2>/dev/null || echo 0)
+  case "$created" in ''|*[!0-9]*) created=0 ;; esac
+  if [ $(( $(date +%s) - created )) -lt 3600 ]; then
+    log "debounce: snapshot $SNAP was created < 1h ago -- skipping rsync"
+    # Tell the operator (their mental model is "I plugged the disk in = I am
+    # waiting for a copy" -- do not stay silent); cooldown 1h.
+    DNUDGE="$LOGDIR/.last-debounce-nudge"
+    if [ ! -f "$DNUDGE" ] || [ $(( $(date +%s) - $(mtime "$DNUDGE") )) -gt 3600 ]; then
+      "$BIN/spine-notify" "ℹ️ Backup volume connected, but a fresh snapshot already exists (<1h old) -- the disk can be unplugged. Force: SPINE_FORCE_BACKUP=1" 2>/dev/null
+      touch "$DNUDGE"
+    fi
+    "$BIN/spine-health"
+    run_maintenance_if_due
+    exit 0
+  fi
+fi
+
+mkdir -p "$SNAP"
+if /usr/bin/rsync -a --delete --exclude='.git/' "$SRC" "$SNAP/" >> "$LOG" 2>&1; then
+  # Marker gives health checks the real backup time. Directory mtime is
+  # unreliable because rsync may preserve source mtimes and make a fresh
+  # SNAP-* look old.
+  date +%s > "$SNAP/.snapshot-created"
+  date +%s > "$LOGDIR/.last-backup"  # internal marker: last successful external backup (readable even when the disk is unplugged)
+  touch "$SNAP"
+  NFILES=$(find "$SNAP" -type f ! -name '.snapshot-created' | wc -l | tr -d ' ')
+  log "snapshot OK: $SNAP ($NFILES files)"
+  # UX decision by the owner: the "copy done -- the disk can be unplugged"
+  # signal goes to Telegram AND the banner.
+  "$BIN/spine-notify" "✅ Spine backup done: $NFILES files -> SNAP-$(date +%F). The backup disk can be unplugged." 2>/dev/null
+else
+  log "ALERT: rsync FAIL"
+  "$BIN/spine-notify" "❌ Spine backup FAILED (rsync) -- do NOT unplug the disk yet, check backup.log" 2>/dev/null
+  "$BIN/spine-health"
+  run_maintenance_if_due
+  exit 1
+fi
+# Rotation: keep-14 is ENABLED (owner decision: old snapshots must actually be
+# deleted; consistent with the supersede policy). Every snapshot is a full
+# mirror -- older ones hold no unique data (everything lives in the git
+# history of the mirror). Disable with: SPINE_BACKUP_PRUNE=0.
+ls -dt "$DSTROOT"/SNAP-* 2>/dev/null | tail -n +15 | while read -r old; do
+  if [ "${SPINE_BACKUP_PRUNE:-1}" = "0" ]; then
+    log "rotate-skip (SPINE_BACKUP_PRUNE=0): outside the keep-14 window -- $old (NOT removed)"
+  else
+    rm -rf "$old" && log "rotate: removed $old (outside the keep-14 window; content lives on in git history)"
+  fi
+done
+# then the health check and (if due) the weekly maintenance
+"$BIN/spine-health"
+run_maintenance_if_due
+exit 0

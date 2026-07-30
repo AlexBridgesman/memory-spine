@@ -1,0 +1,82 @@
+#!/bin/bash
+# Memory Spine SessionStart hook: injects the pre-built packet via the
+# cwd->project map (config/cwd-map.tsv, resolved by spine-packet).
+# Requirements: <1s, reads a PRE-BUILT file, fail-silent for the session,
+# heartbeat + log. stdout of this hook goes straight into the session context.
+export LANG="${LANG:-en_US.UTF-8}"   # stable UTF-8 output regardless of the launchd/hook environment
+set -u
+SPINE_ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+PACKETS="$SPINE_ROOT/_index"
+LOGDIR="${SPINE_LOG_DIR:-$HOME/Library/Logs/AgentMemory}"
+HOOKLOG="$LOGDIR/hook.log"
+exec 2>>"$HOOKLOG" || exec 2>/dev/null   # errors go to the log, never into the session
+
+CWD="$(pwd 2>/dev/null || echo "$HOME")"
+mkdir -p "$LOGDIR/markers" 2>/dev/null
+
+# source from the hook input (stdin JSON): startup|resume|compact|clear
+# (anti-amnesia handling for compaction, 2026-07-22)
+SRC=$(head -c 8192 2>/dev/null | /usr/bin/python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("source",""))
+except Exception: print("")' 2>/dev/null)
+
+# heartbeat: the hook is alive (for health checks)
+date +%s > "$LOGDIR/.hook-heartbeat" 2>/dev/null
+
+# session marker for the Stop hook (named after the parent PID — unique within
+# the session's lifetime)
+touch "$LOGDIR/markers/session-$PPID" 2>/dev/null
+# PID reuse: a new session resets the once-per-session inbox-nudge flag (review 2026-07-04)
+rm -f "$LOGDIR/markers/inbox-nudge-$PPID" 2>/dev/null
+
+# hygiene: old session markers (>7 days) and an oversized hook.log (audit fix
+# 2026-07-04: 112 markers with no cleanup + PID-reuse risk). ONLY session-/
+# inbox-nudge markers: last-fire-<scope> (delta baselines) must NOT be cleaned —
+# rarely-visited scopes would lose their delta.
+find "$LOGDIR/markers" -type f \( -name "session-*" -o -name "inbox-nudge-*" \) -mtime +7 -delete 2>/dev/null
+if [ -f "$HOOKLOG" ] && [ "$(stat -f %z "$HOOKLOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+  mv "$HOOKLOG" "$HOOKLOG.1" 2>/dev/null
+fi
+
+# packet resolution is factored into spine-packet (shared with the pull channel
+# used by agents that have no hooks)
+BINDIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT=$("$BINDIR/spine-packet" --cwd "$CWD" --resolve 2>>"$HOOKLOG")
+RC=$?
+
+if [ "$RC" -ne 0 ]; then
+  # review v3.3: a crash of the python spine-packet used to masquerade as an
+  # "unmapped cwd" — distinguish the two
+  echo "$(date '+%F %T') CRASH spine-packet rc=$RC (traceback above): $CWD" >> "$HOOKLOG"
+  exit 0
+fi
+if [ -z "$PROJECT" ]; then
+  echo "$(date '+%F %T') no-op (unmapped cwd): $CWD" >> "$HOOKLOG"
+  exit 0
+fi
+
+PK="$PACKETS/packet-$PROJECT.md"
+if [ ! -f "$PK" ]; then
+  echo "$(date '+%F %T') no-op (packet missing): $PROJECT" >> "$HOOKLOG"
+  exit 0
+fi
+
+# output via spine-packet: the packet + a "while you were away" DELTA
+# (per-agent marker). Right after COMPACTION the delta is empty (the session
+# itself consumed the marker) — so add the scope's MOST RECENT records to
+# restore fresh state (anti-compaction amnesia, 2026-07-22).
+# NOT an array: an empty "${arr[@]}" under set -u crashes bash 3.2 (the system /bin/bash)
+EXTRA=""
+[ "$SRC" = "compact" ] && EXTRA="--recent 10"
+if "$BINDIR/spine-packet" --project "$PROJECT" --agent claude-code $EXTRA 2>>"$HOOKLOG"; then
+  echo "$(date '+%F %T') fire${SRC:+ ($SRC)}: $PROJECT <- $CWD" >> "$HOOKLOG"
+  date +%s > "$LOGDIR/.hook-last-fire" 2>/dev/null   # health: "the packet was actually delivered"
+fi
+if [ "$SRC" = "compact" ]; then
+  # recovery instructions — part of the context immediately after compaction
+  echo ""
+  echo "WARNING: COMPACTION JUST HAPPENED. Above: the packet and the latest memory records. Before continuing:"
+  echo "1) check your plan against the records above; 2) if a stage was in flight — re-read the scope's INDEX.md;"
+  echo "3) unsaved decisions/facts from this session that you still remember — record them via spine-new NOW."
+fi
+exit 0

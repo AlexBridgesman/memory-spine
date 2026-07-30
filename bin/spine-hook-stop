@@ -1,0 +1,39 @@
+#!/bin/bash
+# Memory Spine Stop hook: a state-aware soft nudge "this session left no records"
+# + a once-per-session reminder about inbox triage.
+# Looks ONLY at project folders (no _index/INDEX/logs). Never blocks the session.
+set -u
+LOGDIR="${SPINE_LOG_DIR:-$HOME/Library/Logs/AgentMemory}"
+MARKER="$LOGDIR/markers/session-$PPID"
+INBOX_MARKER="$LOGDIR/markers/inbox-nudge-$PPID"
+ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+exec 2>>"$LOGDIR/hook.log" || exec 2>/dev/null
+
+[ -f "$MARKER" ] || exit 0   # no marker (old session/clear) — stay silent
+
+MSG=""
+
+# 1) inbox triage: if records are waiting — remind ONCE per session
+INBOX_N=$(grep -rl '^status: \(active\|blocked\)' \
+  "$ROOT/inbox/decisions" "$ROOT/inbox/facts" "$ROOT/inbox/threads" "$ROOT/inbox/artifacts" \
+  2>/dev/null | wc -l | tr -d ' ')
+if [ "${INBOX_N:-0}" -gt 0 ] && [ ! -f "$INBOX_MARKER" ]; then
+  MSG="Memory Spine INBOX: $INBOX_N record(s) awaiting triage. If the owner is present in this session — ask them: new scope / merge / archive (spine-triage)."
+  touch "$INBOX_MARKER" 2>/dev/null
+fi
+
+# 2) a long session with no records at all — nudge
+AGE=$(( $(date +%s) - $(stat -f %m "$MARKER" 2>/dev/null || date +%s) ))
+if [ "$AGE" -ge 600 ]; then
+  NEW=$(find "$ROOT" \( -path "*/decisions/*" -o -path "*/facts/*" -o -path "*/threads/*" -o -path "*/artifacts/*" \) -name "*.md" -newer "$MARKER" 2>/dev/null | head -1)
+  if [ -z "$NEW" ]; then
+    NUDGE="Memory Spine: $((AGE/60)) min of session with no records. If there were durable decisions/facts — spine-new (a topic that fits no project -> --project inbox --proposed-scope)."
+    MSG="${MSG:+$MSG }$NUDGE"
+  fi
+fi
+
+if [ -n "$MSG" ]; then
+  # JSON-safe (review 2026-07-04: a raw printf would break on the first quote in the text)
+  printf '%s' "$MSG" | /usr/bin/python3 -c 'import json,sys; print(json.dumps({"systemMessage": sys.stdin.read()}, ensure_ascii=False))'
+fi
+exit 0

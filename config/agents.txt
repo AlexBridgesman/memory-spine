@@ -1,0 +1,8 @@
+# Known agent identities (SPINE_AGENT values). One per line.
+# Used for per-agent delta tracking in packets and for access log attribution.
+claude-code
+codex
+cursor
+aider
+user
+shared

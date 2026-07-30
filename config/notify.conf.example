@@ -1,0 +1,19 @@
+# Telegram delivery for spine-notify. Copy to notify.conf and fill in.
+# chat_id is NOT a secret; the bot token IS — never store its value in any file.
+chat_id=
+# Command that prints the bot token to stdout. Examples:
+#   token_cmd=security find-generic-password -s memory-spine/TELEGRAM_BOT_TOKEN -w   (macOS Keychain)
+#   token_cmd=op read "op://Private/my-bot/credential"                               (1Password CLI)
+#   token_cmd=pass show telegram/spine-bot                                           (pass)
+token_cmd=
+# Optional (macOS): cache the token in the login Keychain under service
+# "memory-spine/TELEGRAM_BOT_TOKEN" so routine notifications never invoke the
+# secret manager (spine-tg-token warms/refreshes the cache; an HTTP 401
+# invalidates it and pulls a fresh token once). 1 = on, empty/0 = off (default).
+keychain_cache=
+# Optional: command that refreshes a stale token cache (spine-keeper runs it
+# before retrying token_cmd after repeated API failures, e.g. token rotation).
+refresh_cmd=
+# Numeric Telegram user id allowed to command spine-keeper (NOT a secret).
+# Empty = the keeper ignores everyone (no TOFU pairing).
+allowlist=

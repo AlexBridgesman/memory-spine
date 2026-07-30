@@ -1,0 +1,6 @@
+# Recall synonyms: query term<TAB>comma-separated equivalents (used by spine-recall).
+# Extend with your own domain vocabulary.
+telegram	tg,bot
+deploy	deployment,release,ship
+token	credential,secret,key
+schedule	cron,launchd,timer

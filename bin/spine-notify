@@ -1,0 +1,145 @@
+#!/bin/bash
+# spine-notify -- Memory Spine message delivery: your Telegram bot + macOS banner.
+# launchd jobs inherit a minimal environment: pin a UTF-8 locale so non-ASCII
+# text (emoji etc.) renders correctly in osascript banners.
+export LANG="${LANG:-en_US.UTF-8}"
+# The bot token is NEVER stored in files or argv: it is fetched via
+# spine-tg-token (optional Keychain cache -> configurable token_cmd, e.g. a
+# secret-manager read such as `op read "op://<vault>/<item>/credential"`).
+# The secret manager is NOT called inside the retry loop: one message = at most
+# one token fetch. When it sat inside the loop, every retry spawned another
+# secret-manager process -- a burst of macOS permission (TCC) dialogs in the
+# morning and silent losses into the dead-letter queue.
+# Usage:
+#   spine-notify "text"                  # both channels (TG if configured + banner)
+#   spine-notify --tg-only "text"        # Telegram only
+#   spine-notify --local-only "text"     # macOS banner only
+#   spine-notify --flush-deadletter      # re-deliver queued lost messages
+# Config: config/notify.conf (chat_id is NOT a secret; the token never appears
+# there as a value -- only token_cmd, the command that prints it).
+set -u
+BIN="$(cd "$(dirname "$0")" && pwd)"
+CONF="${SPINE_NOTIFY_CONF:-$(dirname "$BIN")/config/notify.conf}"
+LOGDIR="$HOME/Library/Logs/AgentMemory"
+LOG="$LOGDIR/notify.log"
+DEADLETTER="$LOGDIR/notify-deadletter.log"   # lost TG messages (drained by spine-sync / spine-health)
+mkdir -p "$LOGDIR"
+
+# --- --flush-deadletter mode: deliver the queue of previously lost messages ---
+# Lives here (not only in the health check) so spine-sync can drain the queue
+# EVERY cycle (~5 min); when only the twice-a-day health pass did this, an
+# alert could take ~24h to reach the owner. `mv` is the atomic claim: a
+# parallel flush simply finds no queue file. Whatever still fails to send goes
+# back into the queue; rc=1 signals an incomplete flush.
+if [ "${1:-}" = "--flush-deadletter" ]; then
+  [ -s "$DEADLETTER" ] || exit 0
+  DLTMP="$DEADLETTER.resend.$$"
+  mv "$DEADLETTER" "$DLTMP" 2>/dev/null || exit 0
+  FLUSH_RC=0
+  while IFS=$'\t' read -r dts dtag dmsg; do
+    [ -n "$dmsg" ] || continue
+    if ! SPINE_NO_DEADLETTER=1 "$0" --tg-only "📬 Delayed ($dts): $dmsg" 2>/dev/null; then
+      printf '%s\t%s\t%s\n' "$dts" "$dtag" "$dmsg" >> "$DEADLETTER"
+      FLUSH_RC=1
+    fi
+  done < "$DLTMP"
+  rm -f "$DLTMP"
+  exit $FLUSH_RC
+fi
+
+MODE="both"
+case "${1:-}" in
+  --tg-only) MODE="tg"; shift;;
+  --local-only) MODE="local"; shift;;
+esac
+MSG="${1:-}"
+[ -n "$MSG" ] || { echo "spine-notify: empty message" >&2; exit 1; }
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+
+# macOS banner
+if [ "$MODE" != "tg" ]; then
+  # argv passing: the text is never embedded into AppleScript source (quotes
+  # and emoji stay safe); truncate by CHARACTERS -- a byte-level `head -c` once
+  # cut a UTF-8 character in half and the banner rendered as mojibake.
+  SHORT=$(printf '%s' "$MSG" | /usr/bin/python3 -c 'import sys; print(sys.stdin.read()[:200], end="")')
+  /usr/bin/osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "Memory Spine"' -- "$SHORT" 2>/dev/null
+fi
+
+# Telegram (fail-soft: without chat_id or a token -> log it, do not crash)
+# TG_OK: "" = TG not attempted (local-only); 1 = delivered; 0 = failed/unconfigured
+TG_OK=""
+deadletter() {
+  # keep a copy for redelivery; \n -> space (1 line = 1 message, so `wc` counts
+  # honestly). SPINE_NO_DEADLETTER=1 is for senders that recompute their
+  # message on every run (health alerts): otherwise an alert ABOUT the
+  # dead-letter queue would itself pollute the dead-letter queue.
+  [ "${SPINE_NO_DEADLETTER:-}" = "1" ] && return 0
+  printf '%s\t%s\t%s\n' "$(date '+%F %T')" "$1" "$(printf '%s' "$MSG" | tr '\n' ' ')" >> "$DEADLETTER"
+  log "deadletter($1): message saved to notify-deadletter.log"
+}
+if [ "$MODE" != "local" ]; then
+  CHAT_ID=""
+  [ -f "$CONF" ] && CHAT_ID=$(grep -m1 '^chat_id=' "$CONF" | cut -d= -f2 | tr -d ' ')
+  if [ -z "$CHAT_ID" ]; then
+    log "SKIP tg: chat_id not configured ($CONF)"
+    deadletter "no-chat-id"   # a configuration gap must not be silent either
+    TG_OK=0
+  else
+    # Token via spine-tg-token: cache first; on a miss EXACTLY ONE
+    # secret-manager call (under a hard timeout -- no 20-second hangs, no
+    # permission-dialog storms). It used to sit inside the retry loop: one
+    # message = up to 3 secret-manager processes = up to 3 dialogs.
+    TG_OK=0
+    DL_DONE=0
+    REFRESHED=0
+    TOK=$("$BIN/spine-tg-token" 2>/dev/null)
+    if [ -z "$TOK" ]; then
+      # Without a token retries are pointless: the secret manager is equally
+      # unreachable all 3 times, and the message is preserved in the
+      # dead-letter queue anyway (sync/health will re-deliver it later).
+      log "FAIL tg: token unavailable (no cache, no secret manager) -- skipping retries"
+    else
+      # retry x3 with 10s/20s pauses -- TRANSPORT ONLY (lesson: a daily digest
+      # was once lost forever after a single send attempt).
+      for attempt in 1 2 3; do
+        # the URL with the token goes into curl via a stdin config, never argv
+        # -> it does not show up in `ps`
+        R=$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"' "$TOK" | \
+          curl -sm 15 -X POST --config - \
+          --data-urlencode "chat_id=${CHAT_ID}" --data-urlencode "text=${MSG}" \
+          --data-urlencode "disable_web_page_preview=true" 2>&1 | head -c 300)
+        case "$R" in
+          *'"ok":true'*) log "tg OK -> $CHAT_ID (${#MSG} chars, attempt $attempt)"; TG_OK=1; break;;
+          # 401 = the token was rotated and the cache is stale: drop the cache,
+          # pull a fresh token from the secret manager and retry -- exactly
+          # once, or we would loop forever on a dead token.
+          *'"error_code":401'*)
+            if [ "$REFRESHED" = "0" ]; then
+              REFRESHED=1
+              log "tg 401: cached token stale (token rotation?) -- refreshing from the secret manager"
+              "$BIN/spine-tg-token" --invalidate >/dev/null 2>&1
+              TOK=$("$BIN/spine-tg-token" --refresh 2>/dev/null)
+              if [ -z "$TOK" ]; then
+                log "FAIL tg (final): the secret manager gave no fresh token after a 401"
+                deadletter "no-token"; DL_DONE=1; break
+              fi
+              continue
+            fi
+            log "FAIL tg (final: 401 even after a token refresh): $R"
+            deadletter "api-reject"; DL_DONE=1; break;;
+          # definitive API refusal (400 message too long / 403 bot blocked) --
+          # retrying will not help
+          *'"ok":false'*) log "FAIL tg (final, API refusal): $R"; deadletter "api-reject"; DL_DONE=1; break;;
+          *) log "FAIL tg (attempt $attempt/3): $R";;
+        esac
+        [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+      done
+    fi
+    unset TOK
+    [ "$TG_OK" = "0" ] && [ "$DL_DONE" = "0" ] && deadletter "transport"
+  fi
+fi
+# rc=1 when TG was wanted and NOT delivered (callers do not run under set -e;
+# nothing reads this code yet -- reserved for the future)
+[ "$TG_OK" = "0" ] && exit 1
+exit 0

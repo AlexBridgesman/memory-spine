@@ -1,0 +1,89 @@
+#!/bin/bash
+# spine-preflight — environment check before any sync operation. Exit 0 = OK.
+set -u
+FAIL=0
+ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+TOOLS="${SPINE_TOOLS_DIR:-$HOME/dev/memory-spine}"
+REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$HOME/Library/AgentMemory/Remotes}"
+PRIMARY_BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
+# Optional marker file proving the external backup volume is mounted
+# (e.g. /Volumes/YourBackupDisk/AgentMemoryBackup/.mounted). Empty = not configured.
+BACKUP_MARKER="${SPINE_BACKUP_MARKER:-}"
+GITLEAKS="${SPINE_GITLEAKS:-}"
+if [ -z "$GITLEAKS" ]; then
+  GITLEAKS=$(command -v gitleaks 2>/dev/null || true)
+  [ -n "$GITLEAKS" ] || for c in /opt/homebrew/bin/gitleaks /usr/local/bin/gitleaks; do
+    [ -x "$c" ] && { GITLEAKS="$c"; break; }
+  done
+fi
+GIT="${SPINE_GIT:-}"
+if [ -z "$GIT" ]; then
+  GIT=$(command -v git 2>/dev/null || true)
+  [ -n "$GIT" ] || for candidate in /opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git; do
+    [ -x "$candidate" ] && { GIT="$candidate"; break; }
+  done
+fi
+
+[ -n "$GIT" ] && [ -x "$GIT" ] || { echo "PREFLIGHT FAIL: git missing"; FAIL=1; }
+command -v python3 >/dev/null 2>&1 || { echo "PREFLIGHT FAIL: python3 missing"; FAIL=1; }
+command -v rsync >/dev/null 2>&1 || { echo "PREFLIGHT FAIL: rsync missing"; FAIL=1; }
+[ -n "$GITLEAKS" ] && [ -x "$GITLEAKS" ] || { echo "PREFLIGHT FAIL: gitleaks missing — fail-closed"; FAIL=1; }
+[ -d "$ROOT/.git" ] || { echo "PREFLIGHT FAIL: $ROOT is not a git repo"; FAIL=1; }
+[ -d "$PRIMARY_BARE" ] || { echo "PREFLIGHT FAIL: primary bare mirror unavailable: $PRIMARY_BARE"; FAIL=1; }
+
+REMOTE_URL=$("$GIT" -C "$ROOT" remote get-url origin 2>/dev/null || true)
+if [ -z "$REMOTE_URL" ]; then
+  echo "PREFLIGHT FAIL: $ROOT has no origin remote"
+  FAIL=1
+elif [[ "$REMOTE_URL" == /Volumes/* ]]; then
+  # A removable volume as origin means every unmount silently breaks sync
+  echo "PREFLIGHT FAIL: origin still points at a removable volume: $REMOTE_URL"
+  FAIL=1
+elif [[ "$REMOTE_URL" == /* ]] && [ ! -d "$REMOTE_URL" ]; then
+  echo "PREFLIGHT FAIL: origin local path unavailable: $REMOTE_URL"
+  FAIL=1
+fi
+
+# core.quotepath=false is MANDATORY: without it git status quotes non-ASCII file
+# names and spine-sync silently skips those files (audit 2026-07-04). A fresh clone
+# after restore has the default (true) — hence self-heal here, not a one-off manual step.
+QP=$("$GIT" -C "$ROOT" config --get core.quotepath 2>/dev/null || true)
+if [ "$QP" != "false" ]; then
+  if "$GIT" -C "$ROOT" config core.quotepath false 2>/dev/null; then
+    echo "PREFLIGHT FIX: core.quotepath=false set (non-ASCII file names)"
+  else
+    echo "PREFLIGHT FAIL: could not set core.quotepath=false"
+    FAIL=1
+  fi
+fi
+
+# The pre-commit hook is the second gitleaks layer; git clone does NOT restore it
+# (2026-07-04 review: after a restore both layers for the untracked hook were gone) —
+# self-heal from the canonical copy
+CANON_HOOK="$TOOLS/hooks/pre-commit"
+VAULT_HOOK="$ROOT/.git/hooks/pre-commit"
+if [ -f "$CANON_HOOK" ]; then
+  if ! cmp -s "$CANON_HOOK" "$VAULT_HOOK" 2>/dev/null; then
+    if cp "$CANON_HOOK" "$VAULT_HOOK" && chmod +x "$VAULT_HOOK"; then
+      echo "PREFLIGHT FIX: pre-commit hook (re)installed from canon"
+    else
+      echo "PREFLIGHT FAIL: could not install pre-commit hook"
+      FAIL=1
+    fi
+  fi
+else
+  echo "PREFLIGHT FAIL: canonical pre-commit hook missing: $CANON_HOOK"
+  FAIL=1
+fi
+
+# git state sanity: never blind-add on top of unfinished operations
+for bad in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD; do
+  [ -e "$ROOT/.git/$bad" ] && { echo "PREFLIGHT FAIL: git is in $bad state — manual intervention"; FAIL=1; }
+done
+"$GIT" -C "$ROOT" ls-files -u | grep -q . && { echo "PREFLIGHT FAIL: unmerged paths"; FAIL=1; }
+
+# The external backup disk is optional: primary sync and the bare mirror live locally.
+if [ -n "$BACKUP_MARKER" ] && [ ! -f "$BACKUP_MARKER" ]; then
+  echo "PREFLIGHT INFO: external backup volume not mounted — external backup will be skipped"
+fi
+exit $FAIL

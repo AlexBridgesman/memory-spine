@@ -1,0 +1,191 @@
+#!/bin/bash
+# spine-selftest — weekly memory CI (v3.3): verifies the DEFENSE LAYERS by fact,
+# not by faith. Run from the weekly maintenance job or by hand. Read-only for
+# records; temp files go to a scratch dir + one INERT transient inside the vault
+# (T5: private+archived → it enters no auto channel even if it gets stuck;
+# trap cleanup + a final leftover check).
+# v3.3 review: negative tests require a SPECIFIC exit code (1/2), not any
+# nonzero — otherwise a broken tool (127) produced a false PASS.
+set -u
+TOOLS="${SPINE_TOOLS_DIR:-$HOME/dev/memory-spine}"
+BIN="$TOOLS/bin"
+ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$HOME/Library/AgentMemory/Remotes}"
+BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
+PY="${SPINE_PYTHON:-$(command -v python3 || echo /usr/bin/python3)}"
+GITLEAKS="${SPINE_GITLEAKS:-$(command -v gitleaks || echo /opt/homebrew/bin/gitleaks)}"
+GIT="${SPINE_GIT:-}"
+if [ -z "$GIT" ]; then
+  GIT=$(command -v git 2>/dev/null || true)
+  [ -n "$GIT" ] || for c in /opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git; do
+    [ -x "$c" ] && { GIT="$c"; break; }
+  done
+fi
+
+# Config dir resolution — must match spine-gen/spine-validate: env override,
+# then the tools config, then the vault config.
+CFG_DIR="${SPINE_CONFIG_DIR:-}"
+if [ -z "$CFG_DIR" ]; then
+  for c in "$TOOLS/config" "$ROOT/config"; do
+    [ -f "$c/projects.txt" ] && { CFG_DIR="$c"; break; }
+  done
+fi
+: "${CFG_DIR:=$TOOLS/config}"
+DICT="$CFG_DIR/projects.txt"
+# First non-inbox scope from the dictionary hosts the inert transients
+FIRST_SCOPE=$(grep -v '^#' "$DICT" 2>/dev/null | grep -v '^inbox$' | grep . | head -1)
+: "${FIRST_SCOPE:=inbox}"
+
+TMPD=$(mktemp -d "${TMPDIR:-/tmp}/spine-selftest.XXXXXX")
+VAULT_TMP="$ROOT/$FIRST_SCOPE/facts/selftest-dup-key-transient.md"
+VALID_TMP="$ROOT/$FIRST_SCOPE/facts/selftest-valid-transient.md"
+PASS=0; FAIL=0
+cleanup() { rm -rf "$TMPD"; rm -f "$VAULT_TMP" "$VALID_TMP"; }
+trap cleanup EXIT INT TERM HUP
+
+ok()   { PASS=$((PASS+1)); echo "PASS: $1"; }
+bad()  { FAIL=$((FAIL+1)); echo "FAIL: $1"; }
+expect_refusal() { # $1=description; then the command. We expect EXACTLY exit 1 or 2 (a deliberate refusal).
+  local desc="$1"; shift
+  "$@" >/dev/null 2>&1
+  local rc=$?
+  case "$rc" in
+    1|2) ok "$desc";;
+    0)   bad "$desc (passed, but should have refused)";;
+    *)   bad "$desc (rc=$rc — tool broken, not a refusal)";;
+  esac
+}
+
+# T0: tool pre-check — without it the negative tests below would lie
+PRE_OK=1
+for t in "$GITLEAKS" "$PY" "$GIT" "$BIN/spine-new" "$BIN/spine-validate" "$BIN/spine-gen" "$BIN/spine-packet"; do
+  [ -x "$t" ] || { bad "T0 tool missing/not executable: $t"; PRE_OK=0; }
+done
+[ -f "$ROOT/.gitleaks.toml" ] || { bad "T0 missing $ROOT/.gitleaks.toml"; PRE_OK=0; }
+[ "$PRE_OK" = 1 ] && ok "T0 all tools in place"
+
+# T0b: positive smoke — validate must return 0 on a REAL valid record; on a fresh
+# vault with no records yet, an inert synthetic record (private+archived) stands in
+mkdir -p "$ROOT/$FIRST_SCOPE/facts"
+SAMPLE=""
+while IFS= read -r p; do
+  f=$(find "$ROOT/$p/facts" -name "*.md" 2>/dev/null | head -1)
+  [ -n "$f" ] && { SAMPLE="$f"; break; }
+done < <(grep -v '^#' "$DICT" 2>/dev/null | grep .)
+if [ -z "$SAMPLE" ]; then
+  printf -- "---\ntype: fact\nproject: %s\nagent: claude-code\ntitle: \"selftest valid\"\nstatus: archived\ncreated: 2026-01-01T00:00:00Z\nsources:\n  - session:selftest\nsensitivity: private\nconfidence: candidate\n---\nx [[%s]]\n" "$FIRST_SCOPE" "$FIRST_SCOPE" > "$VALID_TMP"
+  SAMPLE="$VALID_TMP"
+fi
+if "$PY" "$BIN/spine-validate" "$SAMPLE" 2>/dev/null | grep -q "^OK:"; then
+  ok "T0b validate positive smoke"
+else
+  bad "T0b validate does not pass on a valid record: $SAMPLE"
+fi
+rm -f "$VALID_TMP"
+
+# T1: unknown project → refusal (exit 1)
+expect_refusal "T1 spine-new refuses an unknown project" \
+  "$PY" "$BIN/spine-new" --type fact --project no-such-project --title x --agent claude-code
+
+# T2: inbox without proposed-scope → refusal
+expect_refusal "T2 spine-new requires --proposed-scope for inbox" \
+  "$PY" "$BIN/spine-new" --type fact --project inbox --title x --agent claude-code
+
+# T3: frontmatter injection (newline in a field) → refusal
+expect_refusal "T3 spine-new blocks \\n injection in summary" \
+  "$PY" "$BIN/spine-new" --type fact --project inbox --proposed-scope t --title x \
+    --agent claude-code --summary "$(printf 'a\nconfidence: verified')"
+
+# T4: a fake secret is caught by the per-file scan WITH the vault config; strict rc=1.
+# The token is assembled at RUNTIME (printf %s): a literal in this file would trip
+# the tools repo's own staged scan — our own gitleaks caught exactly that during a
+# v3.3 commit :)
+printf -- "token sk-ant-oat01-%s\n" "SELFTESTFAKEFAKEFAKEFAKE123456" > "$TMPD/fake.md"
+"$GITLEAKS" dir "$TMPD/fake.md" --config "$ROOT/.gitleaks.toml" --no-banner --redact --exit-code 1 >/dev/null 2>&1
+RC=$?
+case "$RC" in
+  1) ok "T4 gitleaks per-file catches custom rules";;
+  0) bad "T4 gitleaks did NOT catch the fake sk-ant-oat01";;
+  *) bad "T4 gitleaks broken (rc=$RC)";;
+esac
+
+# T5: validate catches duplicated keys. The transient is INERT: private+archived —
+# even stuck after a SIGKILL it never reaches the packet/INDEX/inbox counter
+printf -- "---\ntype: fact\nproject: %s\nagent: claude-code\ntitle: \"selftest\"\nstatus: archived\ncreated: 2026-01-01T00:00:00Z\nsources:\n  - session:selftest\nsensitivity: private\nconfidence: candidate\nconfidence: verified\n---\nx [[%s]]\n" "$FIRST_SCOPE" "$FIRST_SCOPE" > "$VAULT_TMP"
+expect_refusal "T5 spine-validate catches duplicated frontmatter key" \
+  "$PY" "$BIN/spine-validate" "$VAULT_TMP"
+rm -f "$VAULT_TMP"
+
+# T6: spine-gen clean AND without WARN (a journal failure used to hide behind exit 0 — v3.3 review)
+GENOUT=$("$PY" "$BIN/spine-gen" 2>&1)
+if [ $? -eq 0 ] && ! echo "$GENOUT" | grep -q "WARN"; then
+  ok "T6 spine-gen without failures or WARN"
+else
+  bad "T6 spine-gen: $(echo "$GENOUT" | grep WARN | head -2)"
+fi
+
+# T7: a packet exists for EVERY scope in the dictionary
+MISS=""
+while IFS= read -r p; do
+  [ -f "$ROOT/_index/packet-$p.md" ] || MISS="$MISS $p"
+done < <(grep -v '^#' "$DICT" | grep .)
+if [ -z "$MISS" ]; then ok "T7 all packets in place"; else bad "T7 missing packets:$MISS"; fi
+
+# T8: cwd resolution = whatever the map says for $HOME (no hardcode — v3.3 review).
+# Without a cwd-map entry for $HOME, test the inverse contract instead: an
+# unmapped directory must resolve to no scope at all.
+MAP="$CFG_DIR/cwd-map.tsv"
+[ -f "$MAP" ] || MAP="$TOOLS/config/cwd-map.tsv"
+EXPECTED=""
+[ -f "$MAP" ] && EXPECTED=$(grep -v '^#' "$MAP" | awk -F'\t' -v h="$HOME" '$1 == h {print $2}' | head -1)
+if [ -n "$EXPECTED" ]; then
+  R=$("$BIN/spine-packet" --cwd "$HOME" --resolve 2>/dev/null)
+  if [ "$R" = "$EXPECTED" ]; then
+    ok "T8 packet resolution ($R)"
+  else
+    bad "T8 resolution returned '$R', the map says '$EXPECTED'"
+  fi
+else
+  R=$("$BIN/spine-packet" --cwd "$TMPD" --resolve 2>/dev/null)
+  if [ -z "$R" ]; then
+    ok "T8 packet resolution (no map entry for \$HOME; unmapped dir yields no scope)"
+  else
+    bad "T8 unmapped dir resolved to '$R' (expected nothing)"
+  fi
+fi
+
+# T9: local == bare; an ABSENT bare = FAIL (v3.3 review: an empty bare HEAD used to
+# produce a false PASS)
+if [ ! -d "$BARE" ]; then
+  bad "T9 bare mirror ABSENT: $BARE"
+else
+  LH=$("$GIT" -C "$ROOT" rev-parse HEAD 2>/dev/null)
+  BH=$("$GIT" -C "$BARE" rev-parse HEAD 2>/dev/null)
+  if [ -z "$LH" ] || [ -z "$BH" ]; then
+    bad "T9 HEAD unreadable (local='$LH' bare='$BH')"
+  elif [ "$LH" = "$BH" ]; then
+    ok "T9 local==bare"
+  else
+    AHEAD=$("$GIT" -C "$ROOT" rev-list --count "$BH..$LH" 2>/dev/null || echo x)
+    BEHIND=$("$GIT" -C "$ROOT" rev-list --count "$LH..$BH" 2>/dev/null || echo x)
+    if [ "$BEHIND" = "0" ] && [ "$AHEAD" != "x" ] && [ "$AHEAD" != "0" ]; then
+      ok "T9 local ahead of bare by $AHEAD (sync will catch up)"
+    else
+      bad "T9 local != bare (ahead=$AHEAD behind=$BEHIND)"
+    fi
+  fi
+fi
+
+# T10: the hook is installed and matches the canonical copy
+if cmp -s "$TOOLS/hooks/pre-commit" "$ROOT/.git/hooks/pre-commit"; then
+  ok "T10 pre-commit hook = canon"
+else
+  bad "T10 pre-commit hook missing/diverged from canon"
+fi
+
+# T11: leftovers of previous selftests in the vault (a transient stuck after SIGKILL)
+LEFT=$(find "$ROOT" -name "selftest-*transient*" 2>/dev/null | grep -v "$VAULT_TMP" | grep -v "$VALID_TMP" | head -3)
+if [ -z "$LEFT" ]; then ok "T11 no leftover transient files"; else bad "T11 leftovers: $LEFT"; fi
+
+echo "selftest: PASS $PASS / FAIL $FAIL"
+[ "$FAIL" -eq 0 ]

@@ -1,0 +1,44 @@
+#!/bin/bash
+# AgentMemory pre-commit (native git hook, WITHOUT the pre-commit framework).
+# Layers: (1) gitleaks on staged content, fail-closed; (2) max size; (3) record frontmatter core.
+set -u
+TOOLS="${SPINE_TOOLS_DIR:-$HOME/dev/memory-spine}"
+BIN="$TOOLS/bin"
+GITLEAKS="${SPINE_GITLEAKS:-}"
+if [ -z "$GITLEAKS" ]; then
+  GITLEAKS=$(command -v gitleaks 2>/dev/null || true)
+  [ -n "$GITLEAKS" ] || for c in /opt/homebrew/bin/gitleaks /usr/local/bin/gitleaks; do
+    [ -x "$c" ] && { GITLEAKS="$c"; break; }
+  done
+fi
+PY="${SPINE_PYTHON:-$(command -v python3 || echo /usr/bin/python3)}"
+MAX=65536
+
+# (1) fail-closed: no gitleaks → no commit
+if [ -z "$GITLEAKS" ] || [ ! -x "$GITLEAKS" ]; then
+  echo "pre-commit: gitleaks MISSING — fail-closed, commit blocked" >&2
+  exit 1
+fi
+if ! "$GITLEAKS" git --pre-commit --staged --redact --no-banner; then
+  echo "pre-commit: gitleaks found secret(s) — commit blocked" >&2
+  exit 1
+fi
+
+# (2)+(3) per staged file
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+for f in $STAGED; do
+  [ -f "$f" ] || continue
+  size=$(wc -c < "$f" | tr -d ' ')
+  if [ "$size" -gt $MAX ]; then
+    echo "pre-commit: $f > ${MAX}B — large content belongs in external artifact storage" >&2
+    exit 1
+  fi
+done
+MD=$(echo "$STAGED" | grep -E '\.md$' || true)
+if [ -n "$MD" ]; then
+  if ! "$PY" "$BIN/spine-validate" $MD; then
+    echo "pre-commit: invalid record schema — commit blocked" >&2
+    exit 1
+  fi
+fi
+exit 0

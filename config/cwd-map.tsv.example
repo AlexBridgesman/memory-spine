@@ -1,0 +1,8 @@
+# Map working directories to scopes, so agents get the right packet automatically.
+# Format: absolute path prefix<TAB>scope. Longest matching prefix wins.
+# Copy to cwd-map.tsv and edit. Without this file, pass the scope explicitly:
+#   spine-packet work
+#
+# /Users/you/code/some-product	work
+# /Users/you/notes	personal
+# /Users/you/dev/memory-spine	ai-infra

@@ -1,0 +1,36 @@
+# AgentMemory — gitleaks config (extends the default ruleset)
+title = "AgentMemory"
+
+[extend]
+useDefault = true
+
+# Custom rules — ONLY token formats missing from the default ruleset (audit decision)
+
+[[rules]]
+id = "matrix-synapse-access-token"
+description = "Matrix/Synapse access token (syt_)"
+regex = '''syt_[A-Za-z0-9]+_[A-Za-z0-9]+_[A-Za-z0-9]+'''
+
+[[rules]]
+id = "anthropic-oauth-token"
+description = "Anthropic OAuth/refresh token (sk-ant-oat01/ort01)"
+regex = '''sk-ant-o[ar]t01-[A-Za-z0-9_\-]{20,}'''
+
+[[rules]]
+id = "duckdns-token"
+description = "DuckDNS token in URL"
+regex = '''duckdns\.org/update.*token=[a-f0-9\-]{8,}'''
+
+# 2026-07-04 audit: the allowlist was NARROWED. Old global patterns masked REAL
+# secrets: [a-f0-9]{64} allowed any 64-hex token (plenty of API keys are exactly
+# that), and an unanchored ULID pattern allowed any secret containing a
+# 26-character Crockford substring. Now the allowlist fires ONLY when the whole
+# detected "secret" is exactly a bare ULID. Path-based allowlists were removed
+# in the same review: they create per-file blind spots for the per-file scan.
+# A false positive leaves the file unstaged + raises an alert (fail-closed, safe) —
+# then a human adds a PINPOINT allowlist, never a global one.
+[allowlist]
+description = "Bare ULIDs (full match) used as record IDs"
+regexes = [
+  '''^[0-9A-HJKMNP-TV-Z]{26}$''',
+]

@@ -1,0 +1,316 @@
+#!/bin/bash
+# spine-health -- detects the "silent death" of every channel. v1: log + macOS
+# notification (escalates to Telegram via spine-notify with a cooldown).
+export LANG="${LANG:-en_US.UTF-8}"   # UTF-8 so non-ASCII text in banners survives launchd's minimal environment
+set -u
+LOGDIR="$HOME/Library/Logs/AgentMemory"
+LOG="$LOGDIR/sync.log"
+mkdir -p "$LOGDIR"
+ALERTS=""
+NOTES=""
+
+now=$(date +%s)
+ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+BIN="$(cd "$(dirname "$0")" && pwd)"
+TOOLS_DIR="$(dirname "$BIN")"
+# External backup destination comes from config/backup.conf (see spine-backup);
+# unset = external backups are simply "not configured", a note rather than an alert.
+BK_CONF="${SPINE_BACKUP_CONF:-$TOOLS_DIR/config/backup.conf}"
+EXTERNAL_VOLUME=""
+[ -f "$BK_CONF" ] && EXTERNAL_VOLUME=$(sed -n 's/^EXTERNAL_VOLUME=//p' "$BK_CONF" | head -1 | tr -d ' ')
+SNAPDIR="${SPINE_BACKUP_SNAPSHOT_ROOT:-/Volumes/$EXTERNAL_VOLUME/Backups/AgentMemory}"
+BACKUP_MARKER="${SPINE_BACKUP_MARKER:-}"
+GIT="${SPINE_GIT:-}"
+if [ -z "$GIT" ]; then
+  for candidate in /opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git; do
+    [ -x "$candidate" ] && { GIT="$candidate"; break; }
+  done
+  [ -z "$GIT" ] && GIT="$(command -v git 2>/dev/null || echo git)"
+fi
+# BSD (macOS) stat first, GNU stat as fallback so cron/systemd on Linux works too
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+
+# 1) the sync/push channel.
+# The old criterion "last push >24h" gave false positives in quiet periods with
+# no changes: local==origin, sync writes a noop every 5 min, and a push is
+# objectively unnecessary. Alert instead when:
+# - there are unpushed commits and the last push is old/unknown;
+# - the local copy is behind the real origin;
+# - sync.log has not been updated for a long time (the sync channel may be dead).
+if [ -d "$ROOT/.git" ]; then
+  remote_url=$("$GIT" -C "$ROOT" remote get-url origin 2>/dev/null || true)
+  if [ -z "$remote_url" ]; then
+    # local-only mode is supported -- a note, not an alert
+    NOTES="${NOTES:+$NOTES, }no-origin-local-only"
+  else
+    case "$remote_url" in
+      /Volumes/*)
+        ALERTS="$ALERTS\n- origin points at a removable volume: $remote_url (push dies whenever the disk is unplugged; keep the mirror on the internal disk)";;
+      /*)
+        [ -d "$remote_url" ] || ALERTS="$ALERTS\n- origin local path unavailable: $remote_url";;
+    esac
+    if ! "$GIT" -C "$ROOT" fetch origin main:refs/remotes/origin/main >> "$LOG" 2>&1; then
+      ALERTS="$ALERTS\n- could not refresh origin/main from the origin remote"
+    fi
+    unpushed=$("$GIT" -C "$ROOT" rev-list --count origin/main..main 2>/dev/null || echo unknown)
+    behind=$("$GIT" -C "$ROOT" rev-list --count main..origin/main 2>/dev/null || echo unknown)
+    if [ "$unpushed" = "unknown" ]; then
+      ALERTS="$ALERTS\n- could not check for unpushed commits in $ROOT"
+    elif [ "$unpushed" -gt 0 ]; then
+      if [ -f "$LOGDIR/.last-push" ]; then
+        age=$(( (now - $(cat "$LOGDIR/.last-push")) / 3600 ))
+        [ $age -gt 24 ] && ALERTS="$ALERTS\n- ${unpushed} unpushed commit(s), no successful push for ${age}h"
+      else
+        ALERTS="$ALERTS\n- ${unpushed} unpushed commit(s), and no successful push has ever been recorded"
+      fi
+    fi
+    if [ "$behind" = "unknown" ]; then
+      ALERTS="$ALERTS\n- could not check whether local is behind origin in $ROOT"
+    elif [ "$behind" -gt 0 ]; then
+      if [ "$unpushed" != "unknown" ] && [ "$unpushed" -gt 0 ]; then
+        ALERTS="$ALERTS\n- local and origin diverged: ahead=${unpushed}, behind=${behind}"
+      else
+        ALERTS="$ALERTS\n- local AgentMemory is ${behind} commit(s) behind origin; run spine-sync for a fast-forward"
+      fi
+    fi
+  fi
+else
+  ALERTS="$ALERTS\n- AgentMemory git repo unavailable: $ROOT"
+fi
+if [ -f "$LOG" ]; then
+  sync_mt=$(mtime "$LOG")
+  sync_age=$(( (now - sync_mt) / 3600 ))
+  if [ $sync_age -gt 2 ]; then
+    # Sleep is NOT a dead channel (every such alert in a past incident streak
+    # was a sleep artifact). Alert only if the silence exceeds 2h AND persists
+    # after wake-up.
+    # Anchor the pattern at the start: a greedy '.*sec = ' also matched
+    # "usec = " ("usec" contains "sec = "), which once defeated the
+    # suppression -- wake_sec picked up microseconds and looked like 1970.
+    wake_sec=$(sysctl -n kern.waketime 2>/dev/null | sed -n 's/^{ *sec = \([0-9][0-9]*\).*/\1/p' | head -1)
+    case "$wake_sec" in ''|*[!0-9]*) wake_sec=0 ;; esac
+    if [ "$wake_sec" -gt "$sync_mt" ] && [ $(( now - wake_sec )) -le 7200 ]; then
+      NOTES="${NOTES:+$NOTES, }sync-gap-sleep(${sync_age}h)"
+    else
+      ALERTS="$ALERTS\n- sync.log has not been updated for ${sync_age}h"
+    fi
+  fi
+else
+  ALERTS="$ALERTS\n- sync.log missing: $LOG"
+fi
+
+# 2) the replica (external snapshot)
+# Do not rely on the SNAP-* directory mtime -- rsync may preserve the source's
+# old mtime and health would raise a false ALERT. Canonical age: the marker
+# written by spine-backup; fallback: the date in the SNAP-YYYY-MM-DD name;
+# last resort: the directory mtime.
+if [ -z "$EXTERNAL_VOLUME" ] && [ -z "${SPINE_BACKUP_SNAPSHOT_ROOT:-}" ] && [ -z "$BACKUP_MARKER" ]; then
+  NOTES="${NOTES:+$NOTES, }external-backup-not-configured"
+else
+if [ -f "$BACKUP_MARKER" ] || [ -d "$SNAPDIR" ]; then
+if [ -d "$SNAPDIR" ]; then
+  last_path=""
+  for snap in "$SNAPDIR"/SNAP-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
+    [ -d "$snap" ] || continue
+    if [ -z "$last_path" ] || [[ "${snap##*/}" > "${last_path##*/}" ]]; then
+      last_path="$snap"
+    fi
+  done
+  if [ -n "$last_path" ]; then
+    if [ -f "$last_path/.snapshot-created" ]; then
+      mt=$(cat "$last_path/.snapshot-created" 2>/dev/null || echo 0)
+    else
+      snap_date=${last_path##*/SNAP-}
+      mt=$(/bin/date -j -f "%Y-%m-%d" "$snap_date" "+%s" 2>/dev/null || date -d "$snap_date" "+%s" 2>/dev/null || mtime "$last_path")
+    fi
+    case "$mt" in ''|*[!0-9]*) mt=$(mtime "$last_path") ;; esac
+    [ $(( (now - mt) / 3600 )) -gt 48 ] && ALERTS="$ALERTS\n- rsync snapshot older than 48h (${last_path##*/})"
+  else
+    ALERTS="$ALERTS\n- no rsync snapshot found at all"
+  fi
+else
+  ALERTS="$ALERTS\n- rsync snapshot directory unavailable: $SNAPDIR"
+fi
+else
+  NOTES="${NOTES:+$NOTES, }external-backup-offline"
+fi
+# 2b) the external backup is stale. WEEKLY RULE (owner decision): a copy on the
+# external volume at least once a week; remind from day 6, then daily
+# (cooldown ~20h) until the disk is connected and a snapshot succeeds.
+# Works even while the disk is unplugged -- it reads the internal .last-backup
+# marker written by spine-backup.
+LASTBACKUP="$LOGDIR/.last-backup"
+lb_src=0
+[ -f "$LASTBACKUP" ] && lb_src=$(cat "$LASTBACKUP" 2>/dev/null || echo 0)
+case "$lb_src" in ''|*[!0-9]*) lb_src=0 ;; esac
+backup_stale=0; backup_label=""; nudge_msg=""
+if [ "$lb_src" -gt 0 ]; then
+  lb_age_d=$(( (now - lb_src) / 86400 ))
+  if [ "$lb_age_d" -ge 6 ]; then
+    backup_stale=1; backup_label="external-backup-stale-${lb_age_d}d"
+    nudge_msg="WEEKLY backup rule: connect the external backup volume -- no Spine copy for ${lb_age_d} days."
+  fi
+else
+  backup_stale=1; backup_label="external-backup-never"
+  nudge_msg="Connect the external backup volume -- an external Spine backup has never been made on this machine."
+fi
+if [ "$backup_stale" = 1 ]; then
+  NOTES="${NOTES:+$NOTES, }${backup_label}"
+  NUDGE="$LOGDIR/.last-backup-nudge"
+  if [ ! -f "$NUDGE" ] || [ $(( now - $(mtime "$NUDGE") )) -gt 72000 ]; then
+    # Marker BEFORE the send. Lesson: a send once hung for hours, two
+    # processes both passed the cooldown check, and the owner got duplicates.
+    touch "$NUDGE"
+    # SPINE_NO_DEADLETTER: health messages are recomputed on every run -- they
+    # do not belong in the dead-letter queue, or the alerts themselves would
+    # pollute the loss queue.
+    SPINE_NO_DEADLETTER=1 "$BIN/spine-notify" "💾 ${nudge_msg}" 2>/dev/null
+  fi
+fi
+fi
+# 2d) Silent message loss: spine-notify parks undelivered messages in
+# notify-deadletter.log. Health FIRST tries to deliver them itself -- it runs
+# from the sync cycle, i.e. the machine is already awake and the channel is
+# usually alive (the historical root cause of losses: digest/backup fired into
+# a sleeping machine where the secret manager had no network). Bother the
+# owner only if the auto-retry failed too (24h cooldown).
+# No manual ack is needed; the emergency valve is truncating the file.
+DL="$LOGDIR/notify-deadletter.log"
+DLNUDGE="$LOGDIR/.deadletter-nudge"
+# The resend loop itself lives in `spine-notify --flush-deadletter`: spine-sync
+# calls it every cycle; health stays the backstop plus the alerter below.
+if [ -s "$DL" ]; then
+  "$BIN/spine-notify" --flush-deadletter 2>/dev/null || true
+fi
+if [ -s "$DL" ]; then
+  if [ ! -f "$DLNUDGE" ] || [ $(( now - $(mtime "$DLNUDGE") )) -gt 86400 ]; then
+    dl_n=$(wc -l < "$DL" | tr -d ' ')
+    dl_oldest=$(head -1 "$DL" | cut -f1)
+    ALERTS="$ALERTS\n- undelivered TG messages: ${dl_n} (oldest: ${dl_oldest}) -- auto-retry keeps failing, the channel/secret manager is down"
+    touch "$DLNUDGE"
+  fi
+fi
+# 2b-2) PACKET STARVATION. Lesson from a past audit: the packet byte limit did
+# not grow with the corpus, and the main memory channel served ~14% instead of
+# ~100% for a month -- silently, because the only number in the logs was
+# computed BEFORE truncation. Now spine-gen writes real statistics, and here we
+# alert whenever a scope with >=20 passing records ships <35% of them or zero facts.
+PSTATS="$ROOT/_index/.packet-stats.tsv"
+if [ -f "$PSTATS" ]; then
+  starved=$(/usr/bin/python3 - "$PSTATS" << 'PYEOF'
+import sys
+bad = []
+for line in open(sys.argv[1], encoding="utf-8"):
+    c = line.rstrip("\n").split("\t")
+    if len(c) < 4:
+        continue
+    proj, passed, shipped, has_facts = c[0], int(c[1]), int(c[2]), c[3] == "1"
+    if passed < 20:
+        continue
+    pct = 100 * shipped // max(1, passed)
+    if pct < 35 or not has_facts:
+        bad.append(f"{proj} {pct}%{'' if has_facts else ' NO FACTS'}")
+print("; ".join(bad))
+PYEOF
+)
+  [ -n "$starved" ] && ALERTS="$ALERTS\n- packet starving: $starved -- raise PACKET_BYTES or clean up the scope"
+fi
+
+# 2c) Dead maintenance loop (a past audit found 5a/5b had not run for weeks,
+# unnoticed). spine-backup writes .last-maintain after each successful 5a+5b;
+# here: alert when it is older than 8 days.
+MMARK="$LOGDIR/.last-maintain"
+mm_src=0
+[ -f "$MMARK" ] && mm_src=$(cat "$MMARK" 2>/dev/null || echo 0)
+case "$mm_src" in ''|*[!0-9]*) mm_src=0 ;; esac
+if [ "$mm_src" -gt 0 ]; then
+  mm_age_d=$(( (now - mm_src) / 86400 ))
+  [ "$mm_age_d" -gt 8 ] && ALERTS="$ALERTS\n- maintenance (5a/5b) has not run for ${mm_age_d} days -- check the spine-backup chain"
+else
+  NOTES="${NOTES:+$NOTES, }maintain-marker-absent"
+fi
+
+# 3) files unstaged-through-rejection for > 24h + deleted tracked files
+# (NUL-safe parser -- the old awk parsing broke on spaces/renames and silently
+# skipped deletions)
+cd "$ROOT" 2>/dev/null && {
+  DELETED=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if [ ! -f "$f" ]; then
+      # a deleted tracked file: sync will never commit it (no-delete policy) -- alert
+      if "$GIT" ls-files --error-unmatch "$f" >/dev/null 2>&1; then DELETED=$((DELETED+1)); fi
+      continue
+    fi
+    mt=$(mtime "$f")
+    [ $(( (now - mt) / 3600 )) -gt 24 ] && ALERTS="$ALERTS\n- uncommitted for >24h: $f"
+  done < <("$GIT" status --porcelain -z -uall -- '*.md' | /usr/bin/python3 -c '
+import sys
+items = sys.stdin.buffer.read().split(b"\0")
+i = 0
+while i < len(items):
+    e = items[i]
+    if not e: i += 1; continue
+    st = e[:2].decode("ascii","replace"); print(e[3:].decode("utf-8","replace"))
+    if "R" in st or "C" in st: i += 1
+    i += 1
+')
+  [ "$DELETED" -gt 0 ] && ALERTS="$ALERTS\n- $DELETED deleted tracked record(s) pending (sync never commits deletions -- resolve manually; no-delete policy)"
+}
+
+# 3b) the projects.txt dictionary != the actual vault folders. Lesson: a new
+# scope created only on one side (e.g. restored vault, uncommitted tools repo)
+# would be invisible to spine-gen -- the dictionary and folders must not drift.
+DICT="$ROOT/config/projects.txt"
+[ -f "$DICT" ] || DICT="$TOOLS_DIR/config/projects.txt"
+if [ -f "$DICT" ]; then
+  for d in "$ROOT"/*/; do
+    p=$(basename "$d")
+    case "$p" in _index|entities|config) continue;; esac
+    [ -d "$d/facts" ] || continue
+    grep -qx "$p" <(grep -v '^#' "$DICT") || ALERTS="$ALERTS\n- vault folder '$p' missing from the projects.txt dictionary (spine-gen cannot see it!)"
+  done
+  while IFS= read -r p; do
+    [ -d "$ROOT/$p" ] || ALERTS="$ALERTS\n- scope '$p' is in the dictionary but has no folder in the vault"
+  done < <(grep -v '^#' "$DICT" | grep .)
+else
+  ALERTS="$ALERTS\n- projects.txt dictionary missing: $DICT"
+fi
+# 4) hook heartbeat while sessions are fresh (activates once the SessionStart hook exists)
+HB="$LOGDIR/.hook-heartbeat"
+fresh_session=$(find "$HOME/.claude/projects" -name "*.jsonl" -mmin -240 2>/dev/null | head -1)
+if [ -n "$fresh_session" ] && [ -f "$HB" ]; then
+  hb_age=$(( (now - $(mtime "$HB")) / 3600 ))
+  [ $hb_age -gt 12 ] && ALERTS="$ALERTS\n- sessions are running but the SessionStart hook has been silent for ${hb_age}h"
+fi
+# 4b) a live heartbeat does not prove packet delivery: fail-silent branches in
+# the hook can stay quiet for months. .hook-last-fire is written by the
+# SessionStart hook AFTER a successful packet cat.
+LASTFIRE="$LOGDIR/.hook-last-fire"
+if [ -n "$fresh_session" ] && [ -f "$HB" ]; then
+  if [ -f "$LASTFIRE" ]; then
+    lf_age_d=$(( (now - $(mtime "$LASTFIRE")) / 86400 ))
+    [ "$lf_age_d" -gt 3 ] && ALERTS="$ALERTS\n- sessions running, heartbeat alive, but the packet has NOT been delivered for ${lf_age_d} days (cwd map? packet files?)"
+  else
+    NOTES="${NOTES:+$NOTES, }hook-fire-marker-absent"
+  fi
+fi
+
+date +%s > "$LOGDIR/.last-health" 2>/dev/null   # marker for the sync-cycle insurance
+
+if [ -n "$ALERTS" ]; then
+  echo "$(date '+%F %T') HEALTH ALERTS:$(echo -e "$ALERTS")" >> "$LOG"
+  HA_MARK="$LOGDIR/.health-alert-tg"
+  if [ ! -f "$HA_MARK" ] || [ $(( $(date +%s) - $(mtime "$HA_MARK") )) -gt 21600 ]; then
+    # Marker BEFORE the send -- the same race once produced a duplicate alert.
+    # SPINE_NO_DEADLETTER: health recomputes and resends its alerts every run,
+    # so a lost one is not lost for long and must not clog the queue.
+    touch "$HA_MARK"
+    SPINE_NO_DEADLETTER=1 "$BIN/spine-notify" "🚨 Memory Spine ALERT:$(echo -e "$ALERTS" | head -4 | tr '\n' ';') -- details in sync.log" 2>/dev/null
+  else
+    /usr/bin/osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title (item 2 of argv)' -- "Check ~/Library/Logs/AgentMemory/sync.log" "Memory Spine: ALERT" 2>/dev/null
+  fi
+  exit 1
+fi
+echo "$(date '+%F %T') health OK${NOTES:+ ($NOTES)}" >> "$LOG"
+exit 0

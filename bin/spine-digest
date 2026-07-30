@@ -1,0 +1,148 @@
+#!/bin/bash
+# spine-digest -- daily summary of everything waiting on the owner's decision.
+# Mechanical (NO LLM). Delivery: spine-notify (your Telegram bot + macOS banner).
+# Run: launchd label ai.spine.digest daily (e.g. 09:30), or manually.
+# --force = send even when everything is clean.
+export LANG="${LANG:-en_US.UTF-8}"   # UTF-8 so non-ASCII text in banners survives launchd's minimal environment
+set -u
+ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+BIN="$(cd "$(dirname "$0")" && pwd)"
+LOGDIR="$HOME/Library/Logs/AgentMemory"
+FORCE="${1:-}"
+# The for_agent identity that means "the owner" (must match config/agents.txt)
+OWNER="${SPINE_OWNER_AGENT:-user}"
+mkdir -p "$LOGDIR"
+
+# 1) inbox triage: count records AND themes separately. Owner-review lesson:
+# the digest once said "5 themes" while counting RECORDS, but triage works by
+# THEMES (proposed_scope) -- cue the confusion "where are those five?".
+read -r INBOX INBOX_THEMES <<< "$(/usr/bin/python3 - "$ROOT" << 'PYEOF'
+import os, re, sys
+root = sys.argv[1]
+n, themes = 0, set()
+for td in ("decisions", "facts", "threads", "artifacts"):
+    d = os.path.join(root, "inbox", td)
+    if not os.path.isdir(d):
+        continue
+    for fn in os.listdir(d):
+        if not fn.endswith(".md"):
+            continue
+        try:
+            head = open(os.path.join(d, fn), encoding="utf-8", errors="replace").read(2048)
+        except OSError:
+            continue
+        if not re.search(r"^status:\s*(active|blocked)\s*$", head, re.M):
+            continue
+        n += 1
+        m = re.search(r'^proposed_scope:\s*"?(.*?)"?\s*$', head, re.M)
+        themes.add((m.group(1) if m else "") or "(no proposed_scope)")
+print(n, len(themes))
+PYEOF
+)"
+case "$INBOX" in ''|*[!0-9]*) INBOX=0 ;; esac
+case "$INBOX_THEMES" in ''|*[!0-9]*) INBOX_THEMES=0 ;; esac
+
+# 2) promotion candidates (active candidate outside the inbox, older than 3 days)
+PROMO=$(/usr/bin/python3 - "$ROOT" << 'PYEOF'
+import glob, os, re, sys, datetime
+root = sys.argv[1]
+now = datetime.datetime.now(datetime.timezone.utc)
+n = 0
+for p in glob.glob(os.path.join(root, "*", "*", "*.md")):
+    if "/inbox/" in p: continue
+    if not any(t in p for t in ("/facts/", "/decisions/")): continue
+    t = open(p, encoding="utf-8", errors="replace").read(4096)
+    if not re.search(r"^confidence:\s*candidate\s*$", t, re.M): continue
+    if not re.search(r"^status:\s*active\s*$", t, re.M): continue
+    m = re.search(r"^created:\s*(\d{4}-\d{2}-\d{2})", t, re.M)
+    if m:
+        try:
+            if (now - datetime.datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)).days >= 3:
+                n += 1
+        except ValueError:
+            pass
+print(n)
+PYEOF
+)
+
+# 3) quarantine (records that bypassed spine-new)
+QUAR=$(ls "$ROOT/_quarantine" 2>/dev/null | wc -l | tr -d ' ')
+
+# 4) uncommitted records (validation/lint REJECTs)
+UNSTAGED=$(cd "$ROOT" && git status --porcelain -uall -- '*.md' 2>/dev/null | grep -c .)
+case "$UNSTAGED" in ''|*[!0-9]*) UNSTAGED=0 ;; esac
+
+# 4c) items addressed to the owner. Lesson from a past audit: 20 open
+# for_agent threads sat in memory, 9 of them addressed to the owner -- and no
+# channel ever surfaced them.
+read -r MINE MINE_OLD <<< "$(/usr/bin/python3 - "$ROOT" "$OWNER" << 'PYEOF'
+import glob, os, re, sys, datetime
+root, owner = sys.argv[1], re.escape(sys.argv[2])
+n, oldest = 0, None
+for p in glob.glob(os.path.join(root, "*", "*", "*.md")):
+    if "/inbox/" in p or "/_index/" in p:
+        continue
+    try:
+        t = open(p, encoding="utf-8", errors="replace").read(4096)
+    except OSError:
+        continue
+    if not re.search(rf"^for_agent:\s*\"?{owner}\"?\s*$", t, re.M):
+        continue
+    if not re.search(r"^status:\s*(active|blocked)\s*$", t, re.M):
+        continue
+    n += 1
+    m = re.search(r"^created:\s*(\d{4}-\d{2}-\d{2})", t, re.M)
+    if m and (oldest is None or m.group(1) < oldest):
+        oldest = m.group(1)
+days = 0
+if oldest:
+    try:
+        days = (datetime.date.today() - datetime.date.fromisoformat(oldest)).days
+    except ValueError:
+        days = 0
+print(n, days)
+PYEOF
+)"
+case "$MINE" in ''|*[!0-9]*) MINE=0 ;; esac
+case "$MINE_OLD" in ''|*[!0-9]*) MINE_OLD=0 ;; esac
+
+# 4b) memory-access-gate denials over the last day (the gate was born from a
+# real incident -- denials deserve daily visibility)
+DENIES=$(awk -F'\t' -v d="$(date '+%F')" '$1 ~ d && $2 == "DENY"' "$LOGDIR/access.log" 2>/dev/null | wc -l | tr -d ' ')
+case "$DENIES" in ''|*[!0-9]*) DENIES=0 ;; esac
+
+# 5) age of the external backup
+LB="$LOGDIR/.last-backup"
+BK_D="?"
+[ -f "$LB" ] && BK_D=$(( ( $(date +%s) - $(cat "$LB" 2>/dev/null || echo 0) ) / 86400 ))
+
+# 6) latest Q&A self-test score
+QA=$(grep -h "QA-SELFTEST-SCORE:" "$LOGDIR"/maintain-5b-*.md 2>/dev/null | tail -1 | sed 's/.*SCORE: *//')
+
+MSG="📚 Spine digest $(date '+%d.%m'):"
+ACTION=0
+[ "$INBOX" -gt 0 ] && { MSG="$MSG
+⏳ inbox: $INBOX_THEMES theme(s) ($INBOX record(s)) awaiting triage -- one spine-triage pass covers a whole theme"; ACTION=1; }
+[ "$PROMO" -gt 0 ] && { MSG="$MSG
+🔎 promotions: $PROMO candidate(s) (see the 5b report or spine-recall --confidence candidate)"; ACTION=1; }
+[ "$QUAR" -gt 0 ] && { MSG="$MSG
+🚧 QUARANTINE: $QUAR record(s) bypassed spine-new -- investigate!"; ACTION=1; }
+[ "$DENIES" -gt 0 ] && { MSG="$MSG
+🔒 memory access denials: $DENIES (spine-approve --log)"; ACTION=1; }
+[ "$MINE" -gt 0 ] && { MSG="$MSG
+📌 waiting on you: $MINE item(s) in memory, oldest ${MINE_OLD}d (spine-recall --scope ...)"; ACTION=1; }
+[ "$UNSTAGED" -gt 0 ] && { MSG="$MSG
+⚠️ uncommitted: $UNSTAGED (REJECTs? see sync.log)"; ACTION=1; }
+if [ "$BK_D" != "?" ] && [ "$BK_D" -ge 6 ]; then MSG="$MSG
+💾 the backup disk has not been seen for $BK_D days -- weekly rule!"; ACTION=1; fi
+
+if [ "$ACTION" -eq 0 ]; then
+  MSG="$MSG all clear ✅ (backup ${BK_D}d ago$( [ -n "$QA" ] && echo ", Q&A $QA" ))"
+  # quiet day -> send only on Mondays or with --force (do not spam)
+  if [ "$FORCE" != "--force" ] && [ "$(date +%u)" != "1" ]; then
+    echo "$(date '+%F %T') digest: clean, not sending (not Monday)" >> "$LOGDIR/notify.log"
+    exit 0
+  fi
+fi
+"$BIN/spine-notify" "$MSG"
+exit 0

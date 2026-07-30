@@ -1,0 +1,6 @@
+# Delegate rules for mechanical auto-promotions (spine-maintain, no LLM).
+# Copy to promotion-delegates.tsv to activate. Added ONLY by the owner.
+# Format: title-regex (python, case-insensitive) <TAB> target confidence <TAB> min age in days
+# Example: facts whose title says something was deployed to production get
+# promoted candidate -> verified after surviving 7 days unchallenged.
+production deployed|deployed to production	verified	7

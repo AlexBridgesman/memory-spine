@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""spine-approve — owner-side control over memory access (the gate's allowlist).
+
+  spine-approve                               # who has access + recent denials
+  spine-approve "<pattern>" "<label>"         # ALLOW a caller
+  spine-approve --deny "<pattern>" "<label>"  # DENY a caller
+  spine-approve --log [N]                     # memory access log (default 30)
+
+The pattern is a fragment of a path/process name from the ancestor chain
+(e.g. "Cursor.app"). ONLY the owner approves: access is the owner's decision —
+an agent must never grant itself access.
+"""
+import os
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+TOOLS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ALLOWLIST = os.path.join(TOOLS, "config", "agent-allowlist.tsv")
+LOGDIR = os.environ.get("SPINE_LOG_DIR", f"{HOME}/Library/Logs/AgentMemory")
+ACCESS_LOG = os.path.join(LOGDIR, "access.log")
+
+
+def show():
+    print("=== MEMORY ACCESS (config/agent-allowlist.tsv)\n")
+    allow, deny = [], []
+    try:
+        for line in open(ALLOWLIST, encoding="utf-8"):
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            c = line.rstrip("\n").split("\t")
+            if len(c) < 3:
+                continue
+            (deny if c[0].strip() == "deny" else allow).append((c[1], c[2], c[4] if len(c) > 4 else "?"))
+    except OSError as e:
+        sys.exit(f"spine-approve: allowlist unavailable: {e}")
+    print("ALLOWED:")
+    for p, l, d in allow:
+        print(f"  + {l:52} [{p}]  {d}")
+    print("\nDENIED:")
+    for p, l, d in deny:
+        print(f"  - {l:52} [{p}]  {d}")
+    denies = []
+    try:
+        for line in open(ACCESS_LOG, encoding="utf-8"):
+            if "\tDENY\t" in line:
+                denies.append(line.rstrip("\n"))
+    except OSError:
+        pass
+    if denies:
+        print(f"\nRECENT DENIALS ({len(denies)} total, showing 5):")
+        for d in denies[-5:]:
+            c = d.split("\t")
+            print(f"  {c[0]}  action={c[2]} scope={c[3]} agent={c[4]}")
+            print(f"     chain: {c[6] if len(c) > 6 else '?'}")
+    print("\nAllow: spine-approve \"<path fragment>\" \"label\"")
+    print("Deny:  spine-approve --deny \"<fragment>\" \"label\"")
+
+
+def show_log(n):
+    try:
+        lines = open(ACCESS_LOG, encoding="utf-8").read().splitlines()
+    except OSError:
+        sys.exit("access log is empty (no memory access has been recorded yet)")
+    print(f"=== MEMORY ACCESS LOG (last {n} of {len(lines)})\n")
+    for line in lines[-n:]:
+        c = line.split("\t")
+        if len(c) < 6:
+            continue
+        mark = "+" if c[1].startswith("ALLOW") else "-"
+        print(f"{mark} {c[0]}  {c[2]:8} {c[3]:14} agent={c[4]:14} {c[5]}")
+
+
+def add(pattern, label, verdict):
+    pattern, label = pattern.strip(), label.strip()
+    if not pattern or "\t" in pattern or "\t" in label:
+        sys.exit("spine-approve: empty pattern or a TAB inside a value")
+    if len(pattern) < 3:
+        sys.exit("spine-approve: pattern too short (>=3 chars) — the grant would be too broad")
+    with open(ALLOWLIST, "a", encoding="utf-8") as f:
+        f.write(f"{verdict}\t{pattern}\t{label}\towner\t{time.strftime('%F')}\n")
+    print(f"{'ALLOWED' if verdict == 'allow' else 'DENIED'}: {label} [{pattern}]")
+    print("Takes effect immediately for new calls. Commit the tools repo (run a secret scan first).")
+
+
+def main():
+    a = sys.argv[1:]
+    if not a:
+        show()
+    elif a[0] == "--log":
+        show_log(int(a[1]) if len(a) > 1 and a[1].isdigit() else 30)
+    elif a[0] == "--deny":
+        if len(a) < 3:
+            sys.exit("usage: spine-approve --deny \"<pattern>\" \"<label>\"")
+        add(a[1], a[2], "deny")
+    elif len(a) >= 2:
+        add(a[0], a[1], "allow")
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

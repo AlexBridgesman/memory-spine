@@ -1,0 +1,421 @@
+#!/usr/bin/env python3
+"""spine-triage — triage of Memory Spine inbox records.
+
+A maintenance-level tool: run by a human (the owner) or by an agent in a
+session where the owner confirmed the decision. The ONLY sanctioned way to
+move a record out of the inbox into a permanent scope or to create a NEW scope.
+
+Usage:
+  spine-triage                                  # report: groups by proposed_scope
+  spine-triage new-scope <name> <selector> --reason "..."   # new project + move
+  spine-triage merge <target> <selector> --reason "..."     # move into an existing one
+  spine-triage archive <selector> --reason "..."            # archive (leaves the showcases)
+  spine-triage discard <selector> --reason "..."            # DELETE junk (inbox only!)
+  spine-triage interactive                      # TTY loop over the groups
+
+<selector> — a proposed_scope (all records of the group) OR a record ULID.
+After the actions: INDEX/packet regen + spine-sync (the single committer).
+Policy: the inbox is a draft area, junk may be discarded (the file disappears
+from the working copy; git history keeps the trace). Records in CANONICAL
+scopes are never deleted — supersede/archive only (the past is never silently
+rewritten).
+"""
+import argparse
+import datetime
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+ROOT = os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory"))
+BIN = os.path.dirname(os.path.abspath(__file__))
+TOOLS = os.path.dirname(BIN)
+# The scope dictionary is the tools-repo config (the controlled vocabulary
+# read by spine-new/status/promote) — triage appends to that SAME file.
+PROJECTS_TXT = os.path.join(TOOLS, "config", "projects.txt")
+LOGDIR = os.environ.get("SPINE_LOG_DIR",
+                        os.path.expanduser("~/Library/Logs/AgentMemory"))
+TYPEDIRS = ["decisions", "facts", "threads", "artifacts"]
+ULID_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+SCOPE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}$")
+NO_SCOPE = "(no proposed_scope)"
+AGENT = os.environ.get("SPINE_AGENT", "user")
+
+GIT = os.environ.get("SPINE_GIT", "")
+if not GIT:
+    for c in ("/opt/homebrew/bin/git", "/usr/local/bin/git", "/usr/bin/git"):
+        if os.access(c, os.X_OK):
+            GIT = c
+            break
+
+
+def die(msg, code=1):
+    sys.stderr.write(f"spine-triage: ERROR: {msg}\n")
+    sys.exit(code)
+
+
+class TriageError(Exception):
+    """A single-record failure — the batch continues; summary at the end."""
+
+
+LOCK = os.path.join(LOGDIR, ".sync.lock")
+
+
+def acquire_sync_lock(timeout=90):
+    """The same mkdir lock spine-sync uses: rules out a triage <-> scheduled-sync
+    race (review 2026-07-04: TOCTOU between validate and git add)."""
+    os.makedirs(LOGDIR, exist_ok=True)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            os.mkdir(LOCK)
+            with open(os.path.join(LOCK, "pid"), "w") as f:
+                f.write(str(os.getpid()))
+            return True
+        except FileExistsError:
+            time.sleep(3)
+    return False
+
+
+def release_sync_lock():
+    try:
+        os.remove(os.path.join(LOCK, "pid"))
+    except OSError:
+        pass
+    try:
+        os.rmdir(LOCK)
+    except OSError:
+        pass
+
+
+def load_projects():
+    try:
+        with open(PROJECTS_TXT) as f:
+            return [l.strip() for l in f if l.strip() and not l.lstrip().startswith("#")]
+    except OSError as e:
+        die(f"scope dictionary unavailable: {PROJECTS_TXT} ({e})")
+
+
+def parse_fm(path):
+    text = open(path, encoding="utf-8", errors="replace").read()
+    if not text.startswith("---\n"):
+        return None, text
+    end = text.find("\n---", 4)
+    if end < 0:
+        return None, text
+    fm = {}
+    for line in text[4:end].splitlines():
+        m = re.match(r'^([A-Za-z_]+):\s*"?(.*?)"?\s*$', line)
+        if m:
+            fm[m.group(1)] = m.group(2)
+    return fm, text
+
+
+def inbox_records():
+    recs = []
+    for td in TYPEDIRS:
+        d = os.path.join(ROOT, "inbox", td)
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            if not f.endswith(".md"):
+                continue
+            path = os.path.join(d, f)
+            fm, _ = parse_fm(path)
+            if fm and fm.get("status") in ("active", "blocked"):
+                fm["_path"] = path
+                fm["_typedir"] = td
+                recs.append(fm)
+    return recs
+
+
+def groups(recs):
+    g = {}
+    for r in recs:
+        g.setdefault(r.get("proposed_scope") or NO_SCOPE, []).append(r)
+    return g
+
+
+def select(recs, selector):
+    if ULID_RE.fullmatch(selector):
+        hit = [r for r in recs if selector in os.path.basename(r["_path"])]
+        if not hit:
+            die(f"ULID {selector} not found among active inbox records")
+        return hit
+    # the same normalization as groups(): the placeholder group is selectable
+    # too (review 2026-07-04)
+    hit = [r for r in recs if (r.get("proposed_scope") or NO_SCOPE) == selector]
+    if not hit:
+        avail = sorted({r.get("proposed_scope") or NO_SCOPE for r in recs})
+        die(f"group '{selector}' is empty. Existing groups: {', '.join(avail) or '(inbox is empty)'}")
+    return hit
+
+
+def report(recs):
+    if not recs:
+        print("inbox is empty — no triage needed.")
+        return
+    print(f"INBOX: {len(recs)} record(s) awaiting triage.\n")
+    for scope, rs in sorted(groups(recs).items()):
+        print(f"## {scope} ({len(rs)})")
+        for r in rs:
+            print(f"  - [{r.get('type','?')}] {r.get('title','(untitled)')} "
+                  f"({os.path.basename(r['_path'])})")
+        q = shlex.quote(scope)   # protection against copy-paste injection via proposed_scope
+        print(f"  actions: spine-triage new-scope <name> {q} --reason ... | "
+              f"merge <target> {q} --reason ... | archive {q} --reason ...")
+        print()
+
+
+def run(cmd, **kw):
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kw)
+    if r.stdout.strip():
+        print(r.stdout.rstrip())
+    return r.returncode
+
+
+def move_record(r, target, reason, also=None):
+    """Move a record inbox -> target: frontmatter project, hub link, history,
+    git mv. also=[...]: a topic may belong to several projects — target becomes
+    the "home" (the physical folder), the rest go into the `also:` frontmatter
+    and show up in those scopes' INDEX/packet as shared (spine-gen/recall pick
+    them up)."""
+    src = r["_path"]
+    also = [s for s in (also or []) if s != target]
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _, text = parse_fm(src)
+    text = re.sub(r"^project:\s*inbox\s*$", f"project: {target}", text, count=1, flags=re.M)
+    if also:
+        also_block = "also:\n" + "\n".join(f"  - {s}" for s in also)
+        text = re.sub(rf"^project:\s*{re.escape(target)}\s*$",
+                      f"project: {target}\n{also_block}", text, count=1, flags=re.M)
+    text = text.replace("[[inbox]]", f"[[{target}]]")
+    dest_label = target + (f" (+also: {', '.join(also)})" if also else "")
+    hist = f"- {now} — spine-triage ({AGENT}): inbox -> {dest_label}. Reason: {reason}"
+    if "\n## Status history\n" in text:
+        text = text.rstrip() + "\n" + hist + "\n"
+    else:
+        text = text.rstrip() + "\n\n## Status history\n" + hist + "\n"
+    dst = os.path.join(ROOT, target, r["_typedir"], os.path.basename(src))
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.exists(dst):
+        die(f"target already exists: {dst}")
+    original = open(src, encoding="utf-8", errors="replace").read()
+    # tracked -> git mv (stages the rename for spine-sync); fresh untracked ->
+    # plain rename (no git history yet; spine-sync will pick the new path up as
+    # an untracked *.md)
+    tracked = subprocess.run([GIT, "-C", ROOT, "ls-files", "--error-unmatch", src],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+    def _move(a, b):
+        if tracked:
+            return run([GIT, "-C", ROOT, "mv", a, b]) == 0
+        try:
+            os.rename(a, b)
+            return True
+        except OSError as e:
+            print(f"rename FAIL: {e}")
+            return False
+
+    # the order is critical (E2E test 2026-07-04): validate checks the project
+    # field against the FOLDER, so first rewrite the content + move, and only
+    # then validate the file already in place
+    with open(src, "w", encoding="utf-8") as f:
+        f.write(text)
+    if not _move(src, dst):
+        with open(src, "w", encoding="utf-8") as f:
+            f.write(original)
+        raise TriageError(f"move FAIL (content rolled back): {src} -> {dst}")
+    if run([os.path.join(BIN, "spine-validate"), dst]) != 0:
+        # rollback: verify the reverse move too (review: a duplicate ULID if ignored)
+        if not _move(dst, src):
+            raise TriageError(
+                f"CRITICAL: validation failed AND the rollback failed — manual intervention needed!\n"
+                f"  modified file: {dst}\n  original NOT restored at: {src}")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write(original)
+        raise TriageError(f"moved content failed validation — rolled back, file left in the inbox: {src}")
+    if tracked:
+        # stage the FINAL content: git mv staged the old blob, and the first
+        # commit would carry a schema-invalid intermediate state (review 2026-07-04)
+        run([GIT, "-C", ROOT, "add", "--", dst])
+    print(f"MOVED ({'git mv' if tracked else 'rename, untracked'}): "
+          f"{os.path.basename(src)} -> {target}/{r['_typedir']}/")
+
+
+def make_scope(name):
+    projects = load_projects()
+    if name in projects:
+        die(f"scope '{name}' already exists (use merge, not new-scope)")
+    if not SCOPE_RE.fullmatch(name):
+        die(f"invalid scope name '{name}' (a-z, 0-9, hyphen, 2-31 chars)")
+    for td in TYPEDIRS:
+        os.makedirs(os.path.join(ROOT, name, td), exist_ok=True)
+    hub = os.path.join(ROOT, name, f"{name}.md")
+    if not os.path.exists(hub):
+        now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with open(hub, "w", encoding="utf-8") as f:
+            f.write(f"""---
+type: hub
+project: {name}
+title: "{name} — project hub"
+status: active
+created: {now}
+---
+# {name}
+
+(Project description — filled in by the owner/maintenance.)
+
+Hub of this graph cluster. Project records link here via [[{name}]].
+Edited only by maintenance/humans. Created by spine-triage {now}.
+""")
+    with open(PROJECTS_TXT, "a") as f:
+        f.write(name + "\n")
+    print(f"SCOPE CREATED: {name} (folders + hub + projects.txt dictionary)")
+    print(f"  -> remember: add a cwd-map.tsv line if the topic gains a working"
+          f" directory; commit the tools repo (projects.txt) manually, with a secret scan")
+
+
+def move_batch(records, target, reason, also=None):
+    """Batch move: does not die on the first failure (review: new-scope is not atomic)."""
+    ok, failed = 0, 0
+    for r in records:
+        try:
+            move_record(r, target, reason, also=also)
+            ok += 1
+        except TriageError as e:
+            failed += 1
+            print(f"FAIL: {e}")
+    print(f"batch: moved {ok}, failed {failed}")
+    return failed
+
+
+def finalize():
+    run([os.path.join(BIN, "spine-gen")])
+    print("spine-sync (the single committer) — committing changes...")
+    run([os.path.join(BIN, "spine-sync")])
+    print("(if sync.log says 'SKIP: another spine-sync' — the next cycle commits the changes within minutes)")
+
+
+def do_archive(recs, selector, reason):
+    for r in select(recs, selector):
+        run([os.path.join(BIN, "spine-status"), r["_path"],
+             "--status", "archived", "--agent", AGENT, "--reason", reason])
+
+
+def do_discard(recs, selector, reason):
+    """Delete junk FROM THE INBOX only. Tracked -> git rm (history keeps the
+    trace); untracked -> rm (never recorded anywhere yet). Inbox only —
+    canonical scopes are append-only (the past is never silently rewritten)."""
+    for r in select(recs, selector):
+        src = r["_path"]
+        tracked = subprocess.run([GIT, "-C", ROOT, "ls-files", "--error-unmatch", src],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        if tracked:
+            if run([GIT, "-C", ROOT, "rm", "-q", "--", src]) != 0:
+                print(f"FAIL discard: git rm {src}")
+                continue
+        else:
+            try:
+                os.remove(src)
+            except OSError as e:
+                print(f"FAIL discard: {e}")
+                continue
+        print(f"DISCARDED ({'git rm' if tracked else 'rm, untracked'}): "
+              f"{os.path.basename(src)} — {reason}")
+
+
+def interactive(recs):
+    if not sys.stdin.isatty():
+        die("interactive mode needs a TTY; use the subcommands instead")
+    for scope, rs in sorted(groups(recs).items()):
+        print(f"\n## {scope} ({len(rs)}):")
+        for r in rs:
+            print(f"  - [{r.get('type','?')}] {r.get('title','')}")
+        act = input("[n]ew-scope / [m]erge / [a]rchive / [s]kip? ").strip().lower()
+        if act == "n":
+            name = input("new scope name: ").strip()
+            reason = input("reason: ").strip() or "triage"
+            make_scope(name)
+            move_batch(rs, name, reason)
+        elif act == "m":
+            target = input(f"target scope ({', '.join(load_projects())}): ").strip()
+            if target not in load_projects() or target == "inbox":
+                print("invalid target — skipping this group")
+                continue
+            reason = input("reason: ").strip() or "triage"
+            move_batch(rs, target, reason)
+        elif act == "a":
+            reason = input("reason: ").strip() or "triage-archive"
+            for r in rs:
+                run([os.path.join(BIN, "spine-status"), r["_path"],
+                     "--status", "archived", "--agent", AGENT, "--reason", reason])
+    # finalize is invoked by main() after release_sync_lock()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd")
+    p_new = sub.add_parser("new-scope")
+    p_new.add_argument("name")
+    p_new.add_argument("selector")
+    p_new.add_argument("--reason", required=True)
+    p_merge = sub.add_parser("merge")
+    p_merge.add_argument("target")
+    p_merge.add_argument("selector")
+    p_merge.add_argument("--reason", required=True)
+    p_arch = sub.add_parser("archive")
+    p_arch.add_argument("selector")
+    p_arch.add_argument("--reason", required=True)
+    p_disc = sub.add_parser("discard")
+    p_disc.add_argument("selector")
+    p_disc.add_argument("--reason", required=True)
+    sub.add_parser("interactive")
+    a = ap.parse_args()
+
+    recs = inbox_records()
+    if a.cmd is None:
+        report(recs)
+        return
+
+    # mutations run under the same lock as spine-sync (race with the scheduled
+    # sync); finalize comes AFTER release, because it itself calls spine-sync,
+    # which needs the lock
+    if not acquire_sync_lock():
+        die("sync lock busy for >90s — retry (or check for a stale lock in sync.log)")
+    failed = 0
+    try:
+        if a.cmd == "interactive":
+            interactive(recs)
+        elif a.cmd == "new-scope":
+            hits = select(recs, a.selector)
+            make_scope(a.name)
+            failed = move_batch(hits, a.name, a.reason)
+        elif a.cmd == "merge":
+            # multi-target: "work,research" — the first is the home, the rest go to also:
+            targets = [t.strip() for t in a.target.split(",") if t.strip()]
+            projects = load_projects()
+            for t in targets:
+                if t not in projects:
+                    die(f"unknown target scope: {t}")
+                if t == "inbox":
+                    die("merging into the inbox itself makes no sense")
+            if not targets:
+                die("empty target")
+            failed = move_batch(select(recs, a.selector), targets[0], a.reason,
+                                also=targets[1:])
+        elif a.cmd == "archive":
+            do_archive(recs, a.selector, a.reason)
+        elif a.cmd == "discard":
+            do_discard(recs, a.selector, a.reason)
+    finally:
+        release_sync_lock()
+    finalize()
+    if failed:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

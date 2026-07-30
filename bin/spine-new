@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""spine-new — the single entry point for creating AgentMemory records (Memory Spine v3.1).
+
+Usage:
+  spine-new --type decision --project work --title "Title" \
+            [--agent claude-code] [--sensitivity normal] [--status active|blocked] \
+            [--source "session:abc"] [--for-agent codex] [--tag x] \
+            [--supersedes <ULID>] [--replies-to <ULID>] [--body "text"]
+
+Prints the path of the created file. Body is appended by the agent afterwards
+(or passed via --body).
+"""
+import argparse, os, re, sys, secrets, time, datetime
+
+ROOT = os.path.expanduser("~/AgentMemory")
+def _config_dir():
+    """Same resolution order as spine-gen: SPINE_CONFIG_DIR, then the tools dir,
+    then the vault. Keep these in sync — a divergence sends tools to different
+    dictionaries on non-default installs."""
+    env = os.environ.get("SPINE_CONFIG_DIR")
+    if env:
+        return os.path.expanduser(env)
+    tools = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_TOOLS_DIR", "~/dev/memory-spine")))
+    vault = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
+    for c in (os.path.join(tools, "config"), os.path.join(vault, "config")):
+        if os.path.isfile(os.path.join(c, "projects.txt")):
+            return c
+    return os.path.join(tools, "config")
+
+
+CFG = _config_dir()
+
+def _load_list(name):
+    path = os.path.join(CFG, name)
+    try:
+        with open(path) as f:
+            items = [l.strip() for l in f if l.strip() and not l.lstrip().startswith("#")]
+    except OSError:
+        sys.exit(f"spine-new: ERROR: dictionary missing: {path}")
+    if not items:
+        sys.exit(f"spine-new: ERROR: dictionary empty: {path}")
+    return items
+
+PROJECTS = _load_list("projects.txt")
+TYPES = {"decision": "decisions", "fact": "facts", "thread": "threads", "artifact": "artifacts"}
+AGENTS = _load_list("agents.txt")
+SENSITIVITY = ["normal", "private", "local_only"]
+CONFIDENCE = ["candidate", "reported", "verified", "legacy", "untrusted"]
+# New records should normally be active; blocked is allowed for tasks known to be blocked at creation time.
+# resolved/superseded/archived are transitions handled by spine-status, not creation states.
+NEW_STATUS = ["active", "blocked"]
+ULID_RE = r"[0-9A-HJKMNP-TV-Z]{26}"
+
+# Crockford base32 ULID (no external dependencies)
+_B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+def ulid() -> str:
+    ts = int(time.time() * 1000)
+    out = []
+    for _ in range(10):
+        out.append(_B32[ts & 31]); ts >>= 5
+    out.reverse()
+    rnd = secrets.token_bytes(10)
+    acc = int.from_bytes(rnd, "big")
+    tail = []
+    for _ in range(16):
+        tail.append(_B32[acc & 31]); acc >>= 5
+    tail.reverse()
+    return "".join(out) + "".join(tail)
+
+def slugify(title: str) -> str:
+    s = title.lower()
+    # Unicode word characters are kept so non-Latin titles stay readable in
+    # filenames (the regex is Unicode-aware; adjust if you want ASCII-only slugs).
+    s = re.sub(r"[\W_]+", "-", s)
+    return s.strip("-")[:48] or "record"
+
+def die(msg: str):
+    sys.stderr.write(f"spine-new: ERROR: {msg}\n"); sys.exit(1)
+
+def clean_scalar(name, v, maxlen=300):
+    """Sanitize caller-supplied scalar frontmatter fields (security fix 2026-07-04:
+    a newline inside title/summary/proposed_scope = frontmatter injection —
+    last-wins parsers allowed overriding confidence/reviewed_by)."""
+    if v is None:
+        return None
+    if "\n" in v or "\r" in v:
+        die(f"--{name} must not contain a newline (frontmatter injection)")
+    if len(v) > maxlen:
+        die(f"--{name} too long ({len(v)} > {maxlen})")
+    return v.replace('"', "'")
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument("--type", required=True, choices=sorted(TYPES))
+    ap.add_argument("--project", required=True)
+    ap.add_argument("--title", required=True)
+    ap.add_argument("--agent", default=os.environ.get("SPINE_AGENT", "claude-code"))
+    ap.add_argument("--sensitivity", default="normal", choices=SENSITIVITY)
+    ap.add_argument("--status", default="active", choices=NEW_STATUS,
+                    help="initial status for new records; default active; use spine-status for later transitions")
+    ap.add_argument("--confidence", default="candidate", choices=CONFIDENCE)
+    ap.add_argument("--source", action="append", default=[])
+    ap.add_argument("--for-agent", dest="for_agent", default=None)
+    ap.add_argument("--tag", action="append", default=[])
+    ap.add_argument("--supersedes", default=None)
+    ap.add_argument("--replies-to", dest="replies_to", default=None)
+    ap.add_argument("--summary", default=None)
+    ap.add_argument("--body", default=None)
+    ap.add_argument("--proposed-scope", dest="proposed_scope", default=None,
+                    help="name of the future project; REQUIRED and ONLY together with --project inbox")
+    ap.add_argument("--pin", action="store_true",
+                    help="pinned: true — environment facts (service connections/integrations/plugins): "
+                         "always at the top of the packet, never dropped on truncation "
+                         "(anti-compaction-amnesia, 2026-07-22)")
+    a = ap.parse_args()
+
+    # ACCESS GATE (third-party desktop agent incident, 2026-07-28):
+    # only approved callers may write to memory
+    sys.path.insert(0, os.path.expanduser("~/dev/memory-spine/lib"))
+    try:
+        import spine_gate
+        if not spine_gate.enforce("write", a.project, a.agent):
+            sys.exit(2)
+    except ImportError:
+        sys.stderr.write("spine-new: access gate unavailable — allowing\n")
+
+    if a.project not in PROJECTS:
+        die(f"unknown project '{a.project}'. Valid: {', '.join(PROJECTS)}.\n"
+            f"  A new topic that fits no project? Do NOT lose the information:\n"
+            f"  spine-new --project inbox --proposed-scope \"topic name\" ... — the owner triages it later (spine-triage)")
+    if a.project == "inbox" and not a.proposed_scope:
+        die("--project inbox requires --proposed-scope \"name of the future topic\" (for triage)")
+    if a.proposed_scope and a.project != "inbox":
+        die("--proposed-scope only makes sense with --project inbox")
+
+    # sanitize caller-supplied fields (no newlines; double quotes become apostrophes)
+    a.title = clean_scalar("title", a.title)
+    a.summary = clean_scalar("summary", a.summary, maxlen=1000)
+    a.proposed_scope = clean_scalar("proposed-scope", a.proposed_scope, maxlen=60)
+    if a.for_agent: a.for_agent = clean_scalar("for-agent", a.for_agent, maxlen=40)
+    a.source = [clean_scalar("source", s) for s in a.source]
+    a.tag = [clean_scalar("tag", t, maxlen=60) for t in a.tag]
+    if a.agent not in AGENTS:
+        die(f"unknown agent '{a.agent}'. Dictionary: {', '.join(AGENTS)} (extend it via the README)")
+    if not a.source:
+        # manual records by the owner get a user: source; agents default to session:unknown
+        a.source = ["user:owner"] if a.agent == "user" else ["session:unknown"]
+    if a.supersedes and not re.fullmatch(ULID_RE, a.supersedes):
+        die("--supersedes must be a ULID (26 Crockford base32 characters)")
+    if a.replies_to and not re.fullmatch(ULID_RE, a.replies_to):
+        die("--replies-to must be a ULID (26 Crockford base32 characters)")
+
+    uid = ulid()
+    today = datetime.date.today().isoformat()
+    created = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fname = f"{today}--{slugify(a.title)}--{uid}.md"
+    path = os.path.join(ROOT, a.project, TYPES[a.type], fname)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    fm = [
+        "---",
+        f"type: {a.type}",
+        f"project: {a.project}",
+        f"agent: {a.agent}",
+        f'title: "{a.title}"',
+        f"status: {a.status}",
+        f"created: {created}",
+        "sources:",
+    ]
+    fm += [f"  - {s}" for s in a.source]
+    fm.append(f"sensitivity: {a.sensitivity}")
+    fm.append(f"confidence: {a.confidence}")
+    if a.for_agent: fm.append(f"for_agent: {a.for_agent}")
+    if a.tag:
+        fm.append("tags:"); fm += [f"  - {t}" for t in a.tag]
+    if a.supersedes: fm.append(f"supersedes: {a.supersedes}")
+    if a.replies_to: fm.append(f"replies_to: {a.replies_to}")
+    if a.pin: fm.append("pinned: true")
+    if a.summary: fm.append(f'summary: "{a.summary}"')
+    if a.proposed_scope: fm.append(f'proposed_scope: "{a.proposed_scope}"')
+    fm.append("---")
+
+    body = a.body or "(body — to be filled in)"
+    # Normalize literal \n / \t in body (some agents, e.g. codex, pass escape
+    # sequences instead of real newlines — audit fix 2026-06-18)
+    body = body.replace("\\n", "\n").replace("\\t", "\t")
+    content = "\n".join(fm) + f"\n\n{body}\n\n## Relations\n- part_of [[{a.project}]]\n"
+    with open(path, "w") as f:
+        f.write(content)
+
+    # BIRTH LEDGER (v3.4, owner decision 2026-07-04): every legitimate record birth
+    # is registered in the ledger. spine-sync commits new records ONLY when their
+    # ULID is in the ledger; everything else is quarantined.
+    ledger = os.path.expanduser("~/Library/Application Support/AgentMemory/ledger.tsv")
+    os.makedirs(os.path.dirname(ledger), exist_ok=True)
+    with open(ledger, "a") as lf:
+        lf.write(f"{uid}\t{a.project}/{TYPES[a.type]}/{fname}\t{created}\t{a.agent}\n")
+    print(path)
+
+if __name__ == "__main__":
+    main()

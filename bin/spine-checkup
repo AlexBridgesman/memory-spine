@@ -1,0 +1,61 @@
+#!/bin/bash
+# spine-checkup — full human-readable system test in one command (v3.4).
+# Deterministic (no LLM): selftest + health + liveness of the channels → a report
+# via spine-notify (messenger + local banner).
+# Usage: spine-checkup ["message prefix"]
+export LANG="${LANG:-en_US.UTF-8}"   # keep UTF-8 in osascript banners regardless of the launchd environment (2026-07-05)
+set -u
+TOOLS="${SPINE_TOOLS_DIR:-$HOME/dev/memory-spine}"
+BIN="$TOOLS/bin"
+ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+LOGDIR="${SPINE_LOG_DIR:-$HOME/Library/Logs/AgentMemory}"
+PREFIX="${1:-Spine checkup}"
+OK=0; BAD=0; LINES=""
+
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }  # BSD/GNU stat
+
+check() { # $1 name, $2 condition command (0 = good)
+  if eval "$2" >/dev/null 2>&1; then OK=$((OK+1)); LINES="$LINES
+✅ $1"; else BAD=$((BAD+1)); LINES="$LINES
+❌ $1"; fi
+}
+
+ST=$("$BIN/spine-selftest" 2>/dev/null | tail -1)
+case "$ST" in *"FAIL 0"*) OK=$((OK+1)); LINES="$LINES
+✅ selftest: $ST";; *) BAD=$((BAD+1)); LINES="$LINES
+❌ selftest: $ST";; esac
+
+check "health checks" "\"$BIN/spine-health\""
+check "sync alive (<15 min)" "[ \$(( \$(date +%s) - \$(mtime \"$LOGDIR/sync.log\" || echo 0) )) -lt 900 ]"
+if [ -x "$BIN/spine-keeper" ]; then
+  check "keeper process alive" "pgrep -f spine-keeper"
+fi
+check "packet injection fresh (<48 h)" "[ -f \"$LOGDIR/.hook-last-fire\" ] && [ \$(( \$(date +%s) - \$(mtime \"$LOGDIR/.hook-last-fire\") )) -lt 172800 ]"
+# Local LLM check only when a local-llm config exists (optional component)
+LLM_CONF=""
+for c in "${SPINE_CONFIG_DIR:-}" "$TOOLS/config" "$ROOT/config"; do
+  [ -n "$c" ] && [ -f "$c/local-llm.conf" ] && { LLM_CONF="$c/local-llm.conf"; break; }
+done
+if [ -n "$LLM_CONF" ]; then
+  check "local LLM server responding" "curl -sm 5 \"${SPINE_LLM_ENDPOINT:-http://localhost:11434/api/version}\""
+fi
+if [ -x "$BIN/spine-backup" ]; then
+  LB=$(cat "$LOGDIR/.last-backup" 2>/dev/null || echo 0)
+  BK_D=$(( ( $(date +%s) - LB ) / 86400 ))
+  if [ "$BK_D" -le 7 ]; then OK=$((OK+1)); LINES="$LINES
+✅ backup disk: $BK_D day(s) ago"; else BAD=$((BAD+1)); LINES="$LINES
+❌ backup older than a week ($BK_D days)"; fi
+fi
+
+if [ "$BAD" -eq 0 ]; then
+  MSG="$PREFIX: all green ($OK/$OK)$LINES"
+else
+  MSG="$PREFIX: $BAD PROBLEM(S) (ok $OK)$LINES
+→ open an agent session to investigate"
+fi
+if [ -x "$BIN/spine-notify" ]; then
+  "$BIN/spine-notify" "$MSG"
+else
+  echo "$MSG"
+fi
+[ "$BAD" -eq 0 ]

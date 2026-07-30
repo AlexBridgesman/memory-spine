@@ -1,0 +1,19 @@
+# Who may read/write Memory Spine memory (process-ancestry gate; see lib/spine_gate.py).
+# Format: verdict<TAB>pattern<TAB>label<TAB>approved_by<TAB>date
+#   verdict: allow | deny        pattern: substring of the process-ancestor chain (case-insensitive)
+# POLICY: default-deny. No allow match → refusal + alert to the owner. Deny > allow.
+# Edit ONLY via bin/spine-approve (or by the owner manually).
+#
+# --- DENIED (example: an app that should never touch memory) ---
+deny	UntrustedApp.app	example: an app that was never granted memory access	owner	2026-01-01
+#
+# --- ALLOWED (edit for your setup) ---
+allow	Claude.app	Claude Code / Claude Desktop	owner	2026-01-01
+allow	claude-code	Claude Code CLI	owner	2026-01-01
+allow	ChatGPT.app	Codex inside the ChatGPT desktop app	owner	2026-01-01
+allow	/codex	Codex CLI	owner	2026-01-01
+allow	Terminal.app	the owner's terminal (manual work)	owner	2026-01-01
+allow	iTerm	iTerm2	owner	2026-01-01
+# WARNING: NEVER add 'launchd' here — it is the root of EVERY macOS process chain,
+# such a line admits literally everyone (caught by a unit test). Spine's own
+# launchd jobs are covered by their app-bundle patterns instead.

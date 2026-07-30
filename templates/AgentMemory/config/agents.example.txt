@@ -1,0 +1,9 @@
+claude-code
+codex
+hermes
+cursor
+aider
+windsurf
+opencode
+user
+other-agent

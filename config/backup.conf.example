@@ -1,0 +1,4 @@
+# External backup target for spine-backup. Copy to backup.conf and fill in.
+# Name of the mounted external volume (as it appears under /Volumes).
+# Leave empty to skip external backups (primary local bare mirror still runs).
+EXTERNAL_VOLUME=

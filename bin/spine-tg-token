@@ -1,0 +1,136 @@
+#!/bin/bash
+# spine-tg-token -- fetch the token of your Telegram bot for Spine notifications.
+#
+# WHY THIS EXISTS (hard-won lesson): the secret manager must NEVER run inside a
+# delivery retry loop. Originally every message spawned up to 3 secret-manager
+# CLI processes; when the CLI could not authenticate non-interactively it fell
+# back to its desktop-app integration and macOS raised a permission (TCC)
+# dialog PER PROCESS -- the grant binds to the parent process, and the parent
+# differed every time (bash / python / applet). Overnight the desktop app was
+# locked, so every call hung to its 20s timeout and retried; in the morning the
+# owner got a stack of permission dialogs while the notifications had silently
+# landed in the dead-letter queue.
+#
+# THE FIX: the canonical token lives in your secret manager, reached through a
+# configurable `token_cmd` (any command that prints the token to stdout). An
+# OPT-IN macOS Keychain entry acts as a LOCAL CACHE so routine notifications do
+# not invoke the secret manager at all. `token_cmd` runs only on a cache miss
+# or --refresh, exactly once, under a hard timeout: an instant failure beats a
+# 20-second hang plus a permission dialog. The token value never appears in
+# argv (visible in `ps`), in logs, or in git.
+#
+# Config (config/notify.conf next to this repo's bin/; see notify.conf.example):
+#   token_cmd=<command that prints the bot token to stdout>
+#     example (1Password CLI; disabling the desktop-app fallback makes a locked
+#     GUI fail fast instead of hanging on a permission dialog):
+#       token_cmd=env OP_BIOMETRIC_UNLOCK_ENABLED=false op read "op://<vault>/<item>/credential"
+#   keychain_cache=1    # opt-in cache in the macOS login Keychain (default: off)
+#
+# Usage:
+#   spine-tg-token               # token to stdout (cache first, token_cmd on miss)
+#   spine-tg-token --refresh     # force token_cmd and update the cache
+#   spine-tg-token --invalidate  # drop the cache (called after HTTP 401)
+#   spine-tg-token --status      # diagnostics WITHOUT the value (rc 0 = token obtainable)
+set -u
+BIN="$(cd "$(dirname "$0")" && pwd)"
+CONF="${SPINE_NOTIFY_CONF:-$(dirname "$BIN")/config/notify.conf}"
+KC_SVC="memory-spine/TELEGRAM_BOT_TOKEN"   # generic service name; matches notify.conf.example
+KC_ACCT="${USER:-memory-spine}"
+LOGDIR="$HOME/Library/Logs/AgentMemory"
+LOG="$LOGDIR/notify.log"
+mkdir -p "$LOGDIR"
+log() { echo "$(date '+%F %T') tg-token: $*" >> "$LOG"; }
+
+TOKEN_CMD=""
+KC_ENABLED=0
+if [ -f "$CONF" ]; then
+  # sed (not cut) so token_cmd values may themselves contain '=' characters
+  TOKEN_CMD=$(sed -n 's/^token_cmd=//p' "$CONF" | head -1)
+  case "$(sed -n 's/^keychain_cache=//p' "$CONF" | head -1 | tr -d ' ')" in
+    1|true|yes) KC_ENABLED=1 ;;
+  esac
+fi
+
+have_keychain() { [ "$KC_ENABLED" = "1" ] && command -v security >/dev/null 2>&1; }
+
+kc_get() { have_keychain || return 1; security find-generic-password -s "$KC_SVC" -w 2>/dev/null; }
+
+kc_put() {
+  have_keychain || return 0
+  # The value goes in via stdin (`security ... -w` with no argument prompts for
+  # it twice), NOT via argv -- so it never shows up in `ps`. -A lets background
+  # launchd jobs (whose parent processes differ: bash / python / applet) read
+  # it back without an interactive Keychain prompt; -U updates an existing item.
+  printf '%s\n%s\n' "$1" "$1" | security add-generic-password -U -A \
+    -s "$KC_SVC" -a "$KC_ACCT" \
+    -l "Memory Spine: Telegram bot token (cache; canonical copy lives in your secret manager)" \
+    -w >/dev/null 2>&1
+}
+
+kc_del() { have_keychain || return 0; security delete-generic-password -s "$KC_SVC" >/dev/null 2>&1; }
+
+fetch_token() {
+  # One shot, hard 20s timeout: a hung secret-manager CLI must not wedge the
+  # notification path (see header). Runs via /bin/sh so token_cmd may contain
+  # quotes, pipes, or env-var prefixes.
+  [ -n "$TOKEN_CMD" ] || return 1
+  /usr/bin/python3 -c '
+import subprocess, sys
+try:
+    r = subprocess.run(["/bin/sh", "-c", sys.argv[1]], capture_output=True, text=True, timeout=20)
+    if r.returncode == 0:
+        sys.stdout.write(r.stdout.strip())
+except Exception:
+    pass' "$TOKEN_CMD" 2>/dev/null
+}
+
+case "${1:-}" in
+  --invalidate)
+    kc_del
+    log "cache cleared (--invalidate)"
+    exit 0
+    ;;
+  --refresh)
+    TOK=$(fetch_token)
+    if [ -z "$TOK" ]; then
+      log "FAIL --refresh: token_cmd produced nothing (not configured / secret manager unreachable)"
+      exit 1
+    fi
+    kc_put "$TOK" || log "WARN --refresh: got the token, but the Keychain cache was not written"
+    log "cache refreshed from the secret manager"
+    printf '%s' "$TOK"
+    exit 0
+    ;;
+  --status)
+    RC=1
+    if have_keychain; then
+      if [ -n "$(kc_get)" ]; then echo "keychain cache: present"; RC=0; else echo "keychain cache: empty"; fi
+    else
+      echo "keychain cache: disabled (set keychain_cache=1 in notify.conf to enable)"
+    fi
+    if [ -n "$TOKEN_CMD" ]; then
+      if [ -n "$(fetch_token)" ]; then echo "token_cmd: OK"; RC=0; else echo "token_cmd: FAILS"; fi
+    else
+      echo "token_cmd: not configured ($CONF)"
+    fi
+    exit "$RC"
+    ;;
+  "") : ;;
+  *) echo "spine-tg-token: unknown argument '$1'" >&2; exit 2 ;;
+esac
+
+# Normal path: cache first, secret manager only on a miss.
+TOK=$(kc_get)
+if [ -n "$TOK" ]; then
+  printf '%s' "$TOK"
+  exit 0
+fi
+TOK=$(fetch_token)
+if [ -z "$TOK" ]; then
+  log "FAIL: no cached token and token_cmd produced nothing (conf: $CONF)"
+  exit 1
+fi
+kc_put "$TOK" || log "WARN: token fetched, but the Keychain cache was not written"
+log "cache warmed from the secret manager (was a miss)"
+printf '%s' "$TOK"
+exit 0

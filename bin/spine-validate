@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""spine-validate — per-file validation of an AgentMemory record (schema core).
+
+Usage: spine-validate <file.md> [...]   Exit 0 = all valid; 1 = at least one invalid.
+Validates ONLY records inside project directories; other paths (README, hubs,
+INDEX, entities) are skipped as OK.
+"""
+import os, re, sys
+
+ROOT = os.path.realpath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
+TOOLS = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_TOOLS_DIR", "~/dev/memory-spine")))
+
+
+def _config_dir():
+    env = os.environ.get("SPINE_CONFIG_DIR")
+    if env:
+        return os.path.expanduser(env)
+    for c in (os.path.join(TOOLS, "config"), os.path.join(ROOT, "config")):
+        if os.path.isfile(os.path.join(c, "projects.txt")):
+            return c
+    return os.path.join(TOOLS, "config")
+
+CFG = _config_dir()
+
+def _load_set(name):
+    path = os.path.join(CFG, name)
+    try:
+        with open(path) as f:
+            items = {l.strip() for l in f if l.strip() and not l.lstrip().startswith("#")}
+    except OSError:
+        sys.exit(f"spine-validate: dictionary missing: {path}")
+    if not items:
+        sys.exit(f"spine-validate: dictionary empty: {path}")
+    return items
+
+PROJECTS = _load_set("projects.txt")
+TYPEDIRS = {"decisions": "decision", "facts": "fact", "threads": "thread", "artifacts": "artifact"}
+CORE = ["type", "project", "agent", "title", "status", "created", "sources", "sensitivity"]
+STATUS = {"active", "blocked", "resolved", "superseded", "archived"}
+SENS = {"normal", "private", "local_only"}
+MAX_SIZE = 64 * 1024  # hard guard; the soft body recommendation lives in the README
+
+def is_record(path):
+    rel = os.path.relpath(os.path.realpath(path), ROOT)
+    parts = rel.split(os.sep)
+    return len(parts) == 3 and parts[0] in PROJECTS and parts[1] in TYPEDIRS and parts[2].endswith(".md")
+
+def parse_frontmatter(text):
+    if not text.startswith("---\n"): return None
+    end = text.find("\n---", 4)
+    if end < 0: return None
+    fm = {}
+    key = None
+    dupes = set()
+    for line in text[4:end].splitlines():
+        m = re.match(r"^([A-Za-z_]+):\s*(.*)$", line)
+        if m:
+            key = m.group(1); val = m.group(2).strip()
+            if key in fm:
+                dupes.add(key)   # a duplicated key is a sign of frontmatter injection (fix 2026-07-04)
+            fm[key] = val if val else []
+        elif re.match(r"^\s+-\s+", line) and key is not None and isinstance(fm.get(key), list):
+            fm[key].append(line.strip()[2:].strip())
+    fm["_dupes"] = dupes
+    return fm
+
+def validate(path):
+    errs = []
+    if os.path.getsize(path) > MAX_SIZE:
+        errs.append(f"size > {MAX_SIZE} bytes")
+    text = open(path, encoding="utf-8", errors="replace").read()
+    fm = parse_frontmatter(text)
+    if fm is None:
+        return ["no frontmatter"]
+    if fm.get("_dupes"):
+        errs.append(f"duplicated frontmatter keys (injection?): {', '.join(sorted(fm['_dupes']))}")
+    for k in CORE:
+        v = fm.get(k)
+        if v is None or v == [] or v == "":
+            errs.append(f"missing core field: {k}")
+    rel = os.path.relpath(os.path.realpath(path), ROOT).split(os.sep)
+    if fm.get("project") and fm["project"] != rel[0]:
+        errs.append(f"project '{fm['project']}' != directory '{rel[0]}'")
+    if fm.get("type") and TYPEDIRS.get(rel[1]) != fm["type"]:
+        errs.append(f"type '{fm['type']}' != directory '{rel[1]}'")
+    if fm.get("status") and fm["status"] not in STATUS:
+        errs.append(f"invalid status: {fm['status']}")
+    if fm.get("sensitivity") and fm["sensitivity"] not in SENS:
+        errs.append(f"invalid sensitivity: {fm['sensitivity']}")
+    if "[[" not in text:
+        errs.append("no [[wikilink]] at all (minimum: the project hub)")
+    return errs
+
+def main():
+    bad = 0
+    for p in sys.argv[1:]:
+        if not os.path.exists(p) or not is_record(p):
+            print(f"SKIP (not a record): {p}")
+            continue
+        errs = validate(p)
+        if errs:
+            bad = 1
+            print(f"INVALID: {p}")
+            for e in errs: print(f"  - {e}")
+        else:
+            print(f"OK: {p}")
+    sys.exit(bad)
+
+if __name__ == "__main__":
+    main()

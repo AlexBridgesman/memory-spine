@@ -1,0 +1,367 @@
+#!/bin/bash
+# spine-sync -- the ONLY committer of the AgentMemory vault.
+# launchd jobs inherit a minimal environment: pin a UTF-8 locale so non-ASCII
+# text renders correctly in notification banners.
+export LANG="${LANG:-en_US.UTF-8}"
+# Cycle: lock -> drain dead-letters -> preflight -> quiet-guard -> regen
+#        INDEX/packets -> per-file validation + secret scans ->
+#        git add <explicit list> -> commit -> push to origin (retry) -> heartbeat.
+# Agents NEVER run git themselves -- they only create files via spine-new.
+# Suggested schedule: launchd label ai.spine.sync, every 5 minutes (see launchd/).
+set -u
+ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+BIN="$(cd "$(dirname "$0")" && pwd)"
+LOGDIR="$HOME/Library/Logs/AgentMemory"
+LOG="$LOGDIR/sync.log"
+LOCK="$LOGDIR/.sync.lock"
+mkdir -p "$LOGDIR"
+# Typical full setup adds a local bare mirror as 'origin', e.g.:
+#   git init --bare "$HOME/Library/AgentMemory/Remotes/AgentMemory.git"
+#   git -C ~/AgentMemory remote add origin <that path>
+# Without an origin remote, sync runs in local-only mode (commits, no push).
+REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$HOME/Library/AgentMemory/Remotes}"
+PRIMARY_BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
+QUIET_SECONDS=60
+GIT="${SPINE_GIT:-}"
+if [ -z "$GIT" ]; then
+  for candidate in /opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git; do
+    [ -x "$candidate" ] && { GIT="$candidate"; break; }
+  done
+  [ -z "$GIT" ] && GIT="$(command -v git 2>/dev/null || echo git)"
+fi
+GITLEAKS="${SPINE_GITLEAKS:-}"
+if [ -z "$GITLEAKS" ]; then
+  for candidate in /opt/homebrew/bin/gitleaks /usr/local/bin/gitleaks; do
+    [ -x "$candidate" ] && { GITLEAKS="$candidate"; break; }
+  done
+  [ -z "$GITLEAKS" ] && GITLEAKS="$(command -v gitleaks 2>/dev/null || true)"
+fi
+
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+# BSD (macOS) stat first, GNU stat as fallback so cron/systemd on Linux works too
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+fsize() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null; }
+
+rotate_log() {  # dated rotation, keep 5 archives (a fixed ".1" suffix used to overwrite the previous archive silently)
+  local f="$1"
+  if [ -f "$f" ] && [ "$(fsize "$f" || echo 0)" -gt 2097152 ]; then
+    mv "$f" "$f.$(date +%Y%m%d%H%M%S)" 2>/dev/null
+    ls -t "$f".* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null
+  fi
+}
+
+# NUL-safe list of changed paths (git status --porcelain -z): survives
+# non-ASCII filenames (and any core.quotepath setting), spaces, and rename
+# entries "R new\0old". A past audit found the old `awk '{print $NF}'` parsing
+# broke on all of those -- silently.
+changed_paths() {
+  "$GIT" status --porcelain -z -uall -- "$@" 2>>"$LOG" | /usr/bin/python3 -c '
+import sys
+items = sys.stdin.buffer.read().split(b"\0")
+i = 0
+while i < len(items):
+    e = items[i]
+    if not e:
+        i += 1; continue
+    st = e[:2].decode("ascii", "replace")
+    path = e[3:].decode("utf-8", "replace")
+    print(path)
+    if "R" in st or "C" in st:
+        i += 1  # the next NUL element is the old path of a rename/copy (index OR worktree); not needed
+    i += 1
+'
+}
+
+do_push() {
+  for i in 1 2 3; do
+    if "$GIT" push origin main >> "$LOG" 2>&1; then
+      log "push OK"
+      date +%s > "$LOGDIR/.last-push"
+      return 0
+    fi
+    sleep $((i * 5))
+  done
+  log "ALERT: push FAILed after 3 attempts"
+  return 1
+}
+
+refresh_origin_main() {
+  if "$GIT" fetch origin main:refs/remotes/origin/main >> "$LOG" 2>&1; then
+    return 0
+  fi
+  log "ALERT: fetch from origin/main FAILed"
+  return 1
+}
+
+ensure_not_behind_origin() {
+  # Never commit on top of a stale copy: if origin moved (e.g. the vault was
+  # restored or written on another machine), fast-forward when clean and
+  # refuse loudly when diverged.
+  case "$ORIGIN_URL" in
+    /*) [ -d "$ORIGIN_URL" ] || { log "ALERT: origin path unavailable: $ORIGIN_URL"; return 1; } ;;
+  esac
+  refresh_origin_main || return 1
+
+  AHEAD=$("$GIT" rev-list --count origin/main..main 2>/dev/null || echo unknown)
+  BEHIND=$("$GIT" rev-list --count main..origin/main 2>/dev/null || echo unknown)
+  if [ "$AHEAD" = "unknown" ] || [ "$BEHIND" = "unknown" ]; then
+    log "ALERT: could not compute local/origin divergence"
+    return 1
+  fi
+
+  if [ "$BEHIND" -gt 0 ]; then
+    if [ "$AHEAD" -gt 0 ]; then
+      log "ALERT: local and origin diverged (ahead=$AHEAD behind=$BEHIND) -- manual repair required"
+      return 1
+    fi
+    PENDING=$("$GIT" status --porcelain -uall -- '*.md' .gitignore .gitleaks.toml)
+    if [ -n "$PENDING" ]; then
+      log "ALERT: local is $BEHIND commit(s) behind origin AND has local changes -- manual repair required"
+      return 1
+    fi
+    if "$GIT" merge --ff-only origin/main >> "$LOG" 2>&1; then
+      log "fast-forward OK from origin: +$BEHIND commit(s)"
+      return 0
+    fi
+    log "ALERT: fast-forward from origin/main FAILed"
+    return 1
+  fi
+
+  return 0
+}
+
+# --- lock (mkdir is atomic; flock(1) does not exist on macOS) ---
+# Lesson: a lock without a TTL, left behind by SIGKILL/shutdown, killed the
+# committer forever -- and the SKIP cycle kept the log mtime fresh, so the
+# health check stayed silent. Now: the PID lives inside the lock; a dead owner
+# or age >30 min -> break the lock with an ALERT.
+acquire_lock() {
+  if mkdir "$LOCK" 2>/dev/null; then echo $$ > "$LOCK/pid"; return 0; fi
+  local owner age
+  owner=$(cat "$LOCK/pid" 2>/dev/null || echo "")
+  age=$(( $(date +%s) - $(mtime "$LOCK" || date +%s) ))
+  if { [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; } || [ "$age" -gt 1800 ]; then
+    log "ALERT: stale lock broken (owner=${owner:-?} age=${age}s)"
+    rm -rf "$LOCK" 2>/dev/null
+    mkdir "$LOCK" 2>/dev/null && echo $$ > "$LOCK/pid" && return 0
+  fi
+  return 1
+}
+if ! acquire_lock; then
+  log "SKIP: another spine-sync is already running"
+  exit 0
+fi
+trap 'rm -rf "$LOCK" 2>/dev/null' EXIT INT TERM HUP
+
+rotate_log "$LOG"   # after the lock -- concurrent rotation must not clobber an archive
+
+# --- drain the notification dead-letter queue EVERY cycle ---
+# Previously only the health check read the queue (2x/day), so a lost alert
+# once took ~24h to reach the owner. This sits BEFORE preflight on purpose:
+# message delivery must not depend on the vault being healthy. An empty queue
+# costs a single stat. On failure (channel/token down) back off 15 min so we
+# do not hammer the secret manager / curl every five minutes.
+DLFILE="$LOGDIR/notify-deadletter.log"
+DLRETRY="$LOGDIR/.deadletter-retry"
+if [ -s "$DLFILE" ]; then
+  if [ ! -f "$DLRETRY" ] || [ $(( $(date +%s) - $(mtime "$DLRETRY") )) -gt 900 ]; then
+    log "deadletter: draining the queue ($(wc -l < "$DLFILE" | tr -d ' ') message(s))"
+    if "$BIN/spine-notify" --flush-deadletter 2>/dev/null; then
+      rm -f "$DLRETRY" 2>/dev/null
+    else
+      touch "$DLRETRY"
+      log "deadletter: delivery failed -- next attempt in 15 min"
+    fi
+  fi
+fi
+
+# --- preflight (fail-closed when installed) ---
+if [ -x "$BIN/spine-preflight" ]; then
+  if ! "$BIN/spine-preflight" >> "$LOG" 2>&1; then
+    log "ABORT: preflight FAIL"
+    exit 1
+  fi
+fi
+
+cd "$ROOT" || exit 1
+
+# Health-check insurance. Lesson: health used to be invoked ONLY from the
+# backup chain -- a dead backup job meant total blindness. So once a day it
+# also runs from the sync cycle, BEFORE the early-exit noop branches, so it
+# fires in quiet periods too.
+LASTHEALTH="$LOGDIR/.last-health"
+if [ ! -f "$LASTHEALTH" ] || [ $(( $(date +%s) - $(mtime "$LASTHEALTH") )) -gt 86400 ]; then
+  "$BIN/spine-health" || true
+fi
+
+ORIGIN_URL=$("$GIT" remote get-url origin 2>/dev/null || true)
+if [ -n "$ORIGIN_URL" ]; then
+  ensure_not_behind_origin || exit 1
+else
+  # Local-only mode is supported: commits still land in the vault's own history.
+  [ -d "$PRIMARY_BARE" ] && log "WARN: bare mirror exists ($PRIMARY_BARE) but 'origin' is not configured -- running local-only"
+fi
+
+# --- changes in the tracked areas only ---
+CHANGED=$(changed_paths '*.md' .gitignore .gitleaks.toml)
+STAGED_PENDING=$("$GIT" diff --cached --name-only 2>/dev/null)   # e.g. a `git mv` staged by spine-triage
+if [ -z "$CHANGED" ] && [ -z "$STAGED_PENDING" ]; then
+  # catch up on a previously failed push
+  if [ -n "$ORIGIN_URL" ]; then
+    AHEAD=$("$GIT" rev-list --count origin/main..main 2>/dev/null || echo 0)
+    if [ "${AHEAD:-0}" -gt 0 ]; then
+      log "catch-up: $AHEAD unpushed commit(s)"
+      do_push
+      exit 0
+    fi
+  fi
+  log "noop: no changes"
+  exit 0
+fi
+
+# --- quiet-guard: leave alone files written < QUIET_SECONDS ago ---
+NOW=$(date +%s)
+READY=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  if [ ! -f "$f" ]; then READY="$READY
+$f"; continue; fi   # deleted paths are fine to list (they are gone; v1: records are never deleted, but e.g. editor metadata may be)
+  MT=$(mtime "$f" || echo 0)
+  if [ $((NOW - MT)) -ge $QUIET_SECONDS ]; then READY="$READY
+$f"; else log "defer (still being written): $f"; fi
+done <<< "$CHANGED"
+
+READY_N=$(echo "$READY" | grep -c .)
+if [ "$READY_N" -eq 0 ] && [ -z "$STAGED_PENDING" ]; then
+  log "noop: everything is inside the quiet window"; exit 0
+fi
+
+# --- regen INDEX/packets BEFORE the commit (a failure does not block the
+# commit, but 3+ consecutive failures = ALERT: packets silently freeze and the
+# session hook keeps serving stale context) ---
+GENFAIL="$LOGDIR/.gen-fail-count"
+if ! /usr/bin/python3 "$BIN/spine-gen" >> "$LOG" 2>&1; then
+  log "WARN: spine-gen failed -- committing records without a fresh INDEX"
+  FAILS=$(( $(cat "$GENFAIL" 2>/dev/null || echo 0) + 1 )); echo "$FAILS" > "$GENFAIL"
+  if [ "$FAILS" -ge 3 ]; then
+    GF_MARK="$LOGDIR/.gen-fail-tg"
+    if [ ! -f "$GF_MARK" ] || [ $(( $(date +%s) - $(mtime "$GF_MARK") )) -gt 21600 ]; then
+      "$BIN/spine-notify" "⚠️ spine-gen has failed ${FAILS} cycles in a row -- packets are stale, agents receive outdated context" 2>/dev/null
+      touch "$GF_MARK"
+    fi
+  fi
+else
+  rm -f "$GENFAIL" 2>/dev/null
+fi
+# INDEX.md files go into the commit too
+READY="$READY
+$(changed_paths '*/INDEX.md')"
+
+# --- per-file validation + write-path cage + secrets lint + gitleaks ---
+LEDGER="$HOME/Library/Application Support/AgentMemory/ledger.tsv"   # written by spine-new: the registry of legitimate record ULIDs
+QUARANTINED=0
+QUAR="$ROOT/_quarantine"
+is_record_path() { case "$1" in */decisions/*.md|*/facts/*.md|*/threads/*.md|*/artifacts/*.md) return 0;; *) return 1;; esac; }
+STAGE=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  [ -f "$f" ] || continue
+  case "$f" in _quarantine/*) continue;; esac   # never re-process already-quarantined files
+  case "$STAGE" in *"
+$f"*) continue;; esac   # dedup
+
+  # ANTI-FOOTGUN "cage" (honest scope: protects against forgetfulness, NOT
+  # against a malicious actor -- the ledger lives in the same user domain):
+  # a new untracked .md that is either (a) a record whose ULID is not in the
+  # ledger (i.e. written around spine-new), or (b) a non-record outside the
+  # docs allowlist -> quarantine + alert.
+  if ! "$GIT" ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+    QUARANTINE_IT=0
+    if is_record_path "$f"; then
+      ULID=$(basename "$f" | grep -oE '[0-9A-HJKMNP-TV-Z]{26}' | head -1)
+      if [ -z "$ULID" ] || ! grep -q "^$ULID	" "$LEDGER" 2>/dev/null; then QUARANTINE_IT=1; fi
+    else
+      # allowed non-record .md: root docs, scope INDEX/hub files, entities,
+      # and _index output generated by spine-gen (journal, packets)
+      case "$f" in
+        README.md|RUNBOOK.md|entities/*.md) ;;
+        */INDEX.md) ;;
+        _index/*.md) ;;
+        *)
+          B=$(basename "$f" .md); D=$(dirname "$f")
+          [ "$D" = "$B" ] || QUARANTINE_IT=1   # hub = <scope>/<scope>.md; everything else -> quarantine
+          ;;
+      esac
+    fi
+    if [ "$QUARANTINE_IT" = 1 ]; then
+      mkdir -p "$QUAR"
+      DEST="$QUAR/$(date +%s)-$$-$(basename "$f")"
+      if [ -e "$DEST" ]; then DEST="$DEST.$RANDOM"; log "ALERT: name collision in quarantine"; fi
+      mv -n "$f" "$DEST" 2>>"$LOG" && \
+        log "QUARANTINE (bypassed spine-new / unknown .md): $f -> _quarantine/" && QUARANTINED=1
+      "$BIN/spine-notify" "🚧 QUARANTINE: a file bypassed the write path -- $(basename "$f" | head -c 60). Review: $ROOT/_quarantine/" 2>/dev/null
+      continue
+    fi
+  fi
+
+  if ! /usr/bin/python3 "$BIN/spine-validate" "$f" >> "$LOG" 2>&1; then
+    log "REJECT (schema): $f -- left unstaged"
+    continue
+  fi
+  # secrets lint on prose: "password: value" without a locator -> REJECT, loudly
+  # (secret-manager locators -- item names, Keychain entries -- do not trigger it)
+  if is_record_path "$f" && [ -f "$BIN/spine-secrets-lint" ] && ! /usr/bin/python3 "$BIN/spine-secrets-lint" "$f" >> "$LOG" 2>&1; then
+    log "REJECT (secret in prose?): $f -- review by eye and fix (secret-manager locators do not trigger this)"
+    # TG at most once per 12h per file (sync runs every 5 min -- do not spam); banner every cycle
+    SN_MARK="$LOGDIR/markers/secret-tg-$(basename "$f" | /usr/bin/shasum | cut -c1-12)"
+    mkdir -p "$LOGDIR/markers"
+    if [ ! -f "$SN_MARK" ] || [ $(( $(date +%s) - $(mtime "$SN_MARK") )) -gt 43200 ]; then
+      "$BIN/spine-notify" "🔐 SECRET? A possible secret written in prose -- review: $(basename "$f" | head -c 70). The record is blocked until resolved (see sync.log)" 2>/dev/null
+      touch "$SN_MARK"
+    else
+      "$BIN/spine-notify" --local-only "SECRET? still blocked: $(basename "$f" | head -c 60)" 2>/dev/null
+    fi
+    continue
+  fi
+  if [ -n "$GITLEAKS" ]; then
+    GL_ARGS=(dir "$f" --no-banner --redact --exit-code 1)
+    [ -f "$ROOT/.gitleaks.toml" ] && GL_ARGS+=(--config "$ROOT/.gitleaks.toml")
+    if ! "$GITLEAKS" "${GL_ARGS[@]}" >> "$LOG" 2>&1; then
+      log "REJECT (gitleaks!): $f -- left unstaged, REVIEW MANUALLY"
+      continue
+    fi
+  else
+    log "WARN: gitleaks not installed -- secret scan skipped for $f"
+  fi
+  STAGE="$STAGE
+$f"
+done <<< "$READY"
+
+if [ "$QUARANTINED" = 1 ]; then
+  /usr/bin/python3 "$BIN/spine-gen" >> "$LOG" 2>&1 || true   # so the INDEX carries no phantom rows
+fi
+N=$(echo "$STAGE" | grep -c .)
+if [ "$N" -eq 0 ] && [ -z "$STAGED_PENDING" ]; then
+  log "noop: no file passed validation"; exit 0
+fi
+
+# --- explicit add + commit (the pre-commit hook re-scans staged content as a second layer) ---
+if [ "$N" -gt 0 ]; then
+  echo "$STAGE" | grep . | tr '\n' '\0' | xargs -0 "$GIT" add -- 2>>"$LOG"
+fi
+# STAGED_PENDING (e.g. a `git mv` staged by spine-triage) rides along -- `git commit` takes the whole index
+NSTAGED=$(printf '%s\n' "$STAGED_PENDING" | grep -c .)
+TOTAL=$((N + NSTAGED))
+if ! "$GIT" commit -m "spine-sync: $TOTAL file(s)" >> "$LOG" 2>&1; then
+  log "ABORT: commit failed (pre-commit hook?) -- see above"
+  exit 1
+fi
+log "commit OK: $TOTAL file(s)"
+
+# --- push to origin (no pull --rebase: there is exactly one writer) ---
+if [ -n "$ORIGIN_URL" ]; then
+  do_push
+else
+  log "local-only: commit kept local (no origin remote configured)"
+fi
+exit 0

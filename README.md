@@ -16,7 +16,7 @@ No database. No server. No vendor. Battle-tested in daily production.
 ## The pattern
 
 - **Markdown records** for durable decisions, facts, threads, and artifacts — one record = one file, immutable (supersede, never edit).
-- **One CLI entry point** (`spine-new`): validation, secret scanning, and a dedup gate on every write. Agents never hand-write memory files and never touch git.
+- **One CLI entry point** (`spine-new`): validation, an inline secret scan, and a probable-duplicate gate on every write (title-token heuristic — it catches near-copies, not semantic twins). Agents never hand-write memory files and never touch git.
 - **Push, not pull:** each session automatically receives a distilled **packet** (≤14 KB ≈ 3.5k tokens) — pinned env-facts, decisions, facts, blockers — plus a per-agent **delta** ("what changed while you were away").
 - **Default-deny access gate** keyed on process ancestry: only runtimes the owner approved can read memory. Born from a real incident.
 - **Git history** for audit, versioning and backup — a single daemon commits every 5 minutes.

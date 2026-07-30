@@ -1,0 +1,40 @@
+name: "Feedback / improvement"
+description: "Tested Memory Spine? Tell us what to improve — every report is read."
+title: "[feedback] "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing Memory Spine. Honest feedback — including "this part
+        is confusing" or "this claim didn't hold on my machine" — is exactly
+        what we want. External reviews already produced two same-day fix rounds
+        (see CHANGELOG.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What did you try?
+      description: "OS, agent(s) you connected, install path (default/custom)."
+      placeholder: "macOS 26, Claude Code + a local CLI agent, default install"
+    validations:
+      required: true
+  - type: textarea
+    id: improve
+    attributes:
+      label: What should be improved?
+      description: "What surprised you, broke, or promised more than it delivered?"
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output (optional)
+      description: "spine-selftest results, error messages. NEVER paste secret values."
+      render: shell
+  - type: input
+    id: contact
+    attributes:
+      label: Contact for follow-up (optional)
+      description: "Email or handle, if you want us to reach back when it's addressed."
+    validations:
+      required: false

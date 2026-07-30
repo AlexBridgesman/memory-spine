@@ -1,0 +1,32 @@
+name: feedback-notify
+
+# Belt-and-braces for feedback: GitHub already e-mails the repository owner
+# about every new issue (owners are auto-subscribed). This job ADDITIONALLY
+# pushes to a phone via ntfy when the FEEDBACK_NTFY_URL secret is configured
+# (Settings → Secrets and variables → Actions). Without the secret it exits
+# quietly — the e-mail path needs no setup at all.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Optional push notification
+        env:
+          NTFY: ${{ secrets.FEEDBACK_NTFY_URL }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_USER: ${{ github.event.issue.user.login }}
+        run: |
+          if [ -z "$NTFY" ]; then
+            echo "FEEDBACK_NTFY_URL not set — relying on GitHub's own e-mail notifications"
+            exit 0
+          fi
+          printf 'New issue from %s: %s\n%s' "$ISSUE_USER" "$ISSUE_TITLE" "$ISSUE_URL" \
+            | curl -sm 15 -H "Title: memory-spine feedback" --data-binary @- "$NTFY"

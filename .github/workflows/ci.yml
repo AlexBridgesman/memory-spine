@@ -38,18 +38,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/spine-home"
           HOME="$RUNNER_TEMP/spine-home" ./install.sh --yes
 
-      # T9 compares the vault against its local bare mirror; a fresh install has
-      # no remote at all, so create the mirror the same way the docs describe.
-      - name: Create the local bare mirror
-        run: |
-          set -euo pipefail
-          export HOME="$SPINE_HOME"
-          BARE="$HOME/Library/AgentMemory/Remotes/AgentMemory.git"
-          mkdir -p "$(dirname "$BARE")"
-          git init --bare "$BARE"
-          git -C "$HOME/AgentMemory" remote add origin "$BARE"
-          git -C "$HOME/AgentMemory" push -u origin main
-
+      # install.sh creates the local bare mirror itself (branch-correct); the
+      # self-test's T9 verifies local == mirror right after a fresh install.
       - name: Run the self-test
         run: |
           set -euo pipefail

@@ -1,0 +1,19 @@
+# Recall language pack. Copy to recall-lang.conf and extend.
+# Everything here is ADDED to the built-in English lists, so a mixed-language
+# vault stems queries in every language you configure at once.
+#
+# stopwords: words recall should ignore in queries (one line, space-separated;
+# repeat the key on several lines if you prefer — all lines merge).
+# suffixes: inflection endings to strip when building the extra stem variant
+# (longest matches win; the exact term always stays primary).
+#
+# Ukrainian example:
+#   stopwords = як чому де коли що який яка яке котрий треба потрібно
+#   suffixes = ування ювання ення іння ання ами ями ові еві ий ій ів ах ях ою ею
+#
+# Russian example:
+#   stopwords = как почему где когда что какой какая какое нужно надо
+#   suffixes = ование ирование ения ами ями ов ах ях ый ий ой ая ое ую
+#
+stopwords =
+suffixes =

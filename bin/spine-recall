@@ -156,8 +156,11 @@ def main():
     # questions scored 0/5 on exactly this. Light suffix stemming + stop words.
     # The stem is used ONLY as an additional variant of the term (exact match
     # stays primary), so keyword queries do not degrade.
-    # Both lists target the query language (English here) — extend or swap them
-    # for your own language.
+    # The built-in lists are English. A multilingual vault EXTENDS them via
+    # config/recall-lang.conf (external review 2026-07-30: hardcoded English
+    # lists made non-English memories second-class): its stopwords/suffixes are
+    # ADDED to the built-ins, so mixed-language queries stem in every language
+    # you configure. Suffixes are matched longest-first.
     STOP = set("""why how where when what which who whom whose whether
                   the a an to of in on at for with from by about into over under
                   and or but if then than that this these those there here
@@ -166,8 +169,23 @@ def main():
                   have has had my your our their his her me you we they i
                   not no yes need needed want wanted something someone
                   please help know tell show find""".split())
-    SUFFIXES = ("ations", "ation", "ments", "ingly", "ment", "ings", "ions",
-                "ies", "ing", "ion", "ers", "est", "ed", "es", "ly", "er", "s")
+    SUFFIXES = ["ations", "ation", "ments", "ingly", "ment", "ings", "ions",
+                "ies", "ing", "ion", "ers", "est", "ed", "es", "ly", "er", "s"]
+    lang_conf = os.path.join(CFG, "recall-lang.conf")
+    if os.path.exists(lang_conf):
+        try:
+            for raw in open(lang_conf, encoding="utf-8"):
+                raw = raw.strip()
+                if not raw or raw.startswith("#") or "=" not in raw:
+                    continue
+                key, _, val = raw.partition("=")
+                if key.strip() == "stopwords":
+                    STOP |= {w.casefold() for w in val.split()}
+                elif key.strip() == "suffixes":
+                    SUFFIXES += [s.casefold() for s in val.split() if s.strip()]
+        except OSError as e:
+            sys.stderr.write(f"spine-recall: recall-lang.conf unreadable: {e}\n")
+    SUFFIXES = tuple(sorted(set(SUFFIXES), key=len, reverse=True))
 
     def stem(w):
         w = w.casefold()

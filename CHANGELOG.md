@@ -1,5 +1,8 @@
 # Changelog
 
+Everything below ships as **v0.1.0** — the first tagged point of reference
+for installs and forks.
+
 ## 2026-07-30 — review round 2 (community feedback, same day)
 
 - **Secret scan moved to stdin** — content is scanned before a single byte

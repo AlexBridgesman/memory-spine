@@ -134,7 +134,7 @@ find "$MEMORY_ROOT" -name '*.md' -not -path '*/.git/*' -print0 | xargs -0 "$TOOL
 # rides journal/history like everything else) + a machine-readable
 # PROVENANCE.md at the vault root. No network, no phone-home: provenance
 # lives with the OWNER of the data, not with us.
-SRC_COMMIT="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+SRC_COMMIT="$(git -C "$SCRIPT_DIR" describe --tags --always 2>/dev/null || echo unknown)"
 SRC_URL="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo unknown)"
 INSTALL_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 FIRST_SCOPE="$(echo "$PROJECTS" | cut -d, -f1)"

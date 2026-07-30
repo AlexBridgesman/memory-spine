@@ -1,5 +1,15 @@
-# Telegram delivery for spine-notify. Copy to notify.conf and fill in.
-# chat_id is NOT a secret; the bot token IS — never store its value in any file.
+# Push delivery for spine-notify. Copy to notify.conf and fill in.
+# Configure Telegram, ntfy, or both — delivery by any one channel counts.
+#
+# ntfy (https://ntfy.sh or self-hosted): native iOS/Android push, no bot, no
+# account. The topic name is not a secret value, but treat it like a phone
+# number — anyone who knows it can read your alerts, so use a long random
+# topic (or your own server):
+#   ntfy_url=https://ntfy.sh/your-long-random-topic
+ntfy_url=
+#
+# Telegram: chat_id is NOT a secret; the bot token IS — never store its value
+# in any file.
 chat_id=
 # Command that prints the bot token to stdout. Examples:
 #   token_cmd=security find-generic-password -s memory-spine/TELEGRAM_BOT_TOKEN -w   (macOS Keychain)

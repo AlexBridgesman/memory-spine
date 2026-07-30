@@ -250,5 +250,23 @@ fi
 rm -f "$U14" "$N14" 2>/dev/null
 "$PY" "$BIN/spine-gen" >/dev/null 2>&1   # regenerate without the transients
 
+# T15: a MISSING secret scanner is fail-closed (review round 2: the first
+# version wrote unscanned with just a warning); SPINE_NO_SCAN=1 is the audited
+# escape. The scanner is hidden for one call only.
+mv "$BIN/spine-secrets-lint" "$BIN/spine-secrets-lint.hidden"
+OUT15=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+  --title "selftest noscan refusal transient" --body "plain body" 2>&1)
+RC15=$?
+F15=$(SPINE_NO_SCAN=1 "$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+  --title "selftest noscan escape transient" --body "plain body" 2>/dev/null | tail -1)
+mv "$BIN/spine-secrets-lint.hidden" "$BIN/spine-secrets-lint"
+if [ "$RC15" -ne 0 ] && echo "$OUT15" | grep -q "fail-closed" && [ -f "$F15" ]; then
+  ok "T15 missing scanner refuses; SPINE_NO_SCAN=1 escape writes"
+else
+  bad "T15 missing-scanner behavior wrong (rc=$RC15, escape file: ${F15:-none})"
+fi
+rm -f "$F15" 2>/dev/null
+find "$ROOT/$FIRST_SCOPE" -name "*selftest-noscan*" -delete 2>/dev/null
+
 echo "selftest: PASS $PASS / FAIL $FAIL"
 [ "$FAIL" -eq 0 ]

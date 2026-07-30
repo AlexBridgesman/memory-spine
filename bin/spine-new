@@ -75,6 +75,20 @@ def slugify(title: str) -> str:
     s = re.sub(r"[\W_]+", "-", s)
     return s.strip("-")[:48] or "record"
 
+def _audit_direct(verdict, scope, agent, note):
+    """Append an access-log line WITHOUT the gate module (external review
+    2026-07-30, round 2: with the gate module missing, SPINE_NO_GATE=1 used to
+    leave no audit trail at all — 'always audited' must hold even then)."""
+    import time as _t
+    logdir = os.environ.get("SPINE_LOG_DIR") or os.path.expanduser("~/Library/Logs/AgentMemory")
+    try:
+        os.makedirs(logdir, exist_ok=True)
+        with open(os.path.join(logdir, "access.log"), "a") as f:
+            f.write(f"{_t.strftime('%F %T')}\t{verdict}\twrite\t{scope or '-'}\t{agent}\t{note}\t(no gate module)\n")
+    except OSError:
+        pass
+
+
 def die(msg: str):
     sys.stderr.write(f"spine-new: ERROR: {msg}\n"); sys.exit(1)
 
@@ -128,6 +142,7 @@ def main():
     except ImportError:
         if os.environ.get("SPINE_NO_GATE") == "1":
             sys.stderr.write("spine-new: WARNING: running without the access gate (SPINE_NO_GATE=1)\n")
+            _audit_direct("ALLOW-NOGATE", a.project, a.agent, "gate module missing, bypassed via SPINE_NO_GATE=1")
         else:
             sys.stderr.write(
                 f"spine-new: ERROR: access gate not importable from {gate_lib} — refusing (fail-closed).\n"
@@ -226,25 +241,29 @@ def main():
                 "\n  If this supersedes old knowledge: add --supersedes <ULID>."
                 "\n  If it is genuinely a different record: add --allow-duplicate.")
 
-    # SECRET SCAN BEFORE THE VAULT (same review): the scanner used to run only
-    # at commit time, so a secret value could sit in a plaintext file for
-    # minutes. Now the record is written to a temp file, scanned, and only a
-    # clean file is renamed into the vault — atomically, so no reader ever
-    # sees an unscanned record.
-    tmp_path = path + ".scanning"
-    with open(tmp_path, "w") as f:
-        f.write(content)
+    # SECRET SCAN BEFORE THE VAULT (external review 2026-07-30, round 2): the
+    # content is scanned via STDIN before a single byte reaches the vault
+    # directory — the first version wrote a `.scanning` temp file next to the
+    # record, so a crash between write and unlink could leave a plaintext
+    # secret inside the vault. A missing scanner is FAIL-CLOSED (mirroring the
+    # access gate); SPINE_NO_SCAN=1 is the explicit, audited opt-out.
     lint = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spine-secrets-lint")
     if os.path.exists(lint):
         import subprocess
-        scan = subprocess.run([lint, tmp_path], capture_output=True, text=True)
+        scan = subprocess.run([lint, "-"], input=content, capture_output=True, text=True)
         if scan.returncode != 0:
-            os.unlink(tmp_path)
             die("the record looks like it contains a SECRET VALUE — refused.\n"
                 + (scan.stdout or scan.stderr).strip()[:400] +
                 "\n  Store only the secret's name + location, never the value.")
+    elif os.environ.get("SPINE_NO_SCAN") == "1":
+        sys.stderr.write("spine-new: WARNING: writing UNSCANNED (SPINE_NO_SCAN=1)\n")
+        _audit_direct("ALLOW-NOSCAN", a.project, a.agent, "secret scanner disabled via SPINE_NO_SCAN=1")
     else:
-        sys.stderr.write("spine-new: WARNING: spine-secrets-lint not found — writing unscanned\n")
+        die(f"secret scanner not found at {lint} — refusing (fail-closed).\n"
+            "  Restore bin/spine-secrets-lint, or set SPINE_NO_SCAN=1 to write unscanned deliberately.")
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        f.write(content)   # content already verified clean — atomic publish only
     os.replace(tmp_path, path)
 
     # BIRTH LEDGER (v3.4, owner decision 2026-07-04): every legitimate record birth

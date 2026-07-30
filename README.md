@@ -123,6 +123,17 @@ A third-party desktop app once picked up a global agent profile during onboardin
 - `docs/` — architecture and agent rules.
 - `.github/workflows/ci.yml` — gitleaks (full history) + selftest on macOS.
 
+## Provenance, not telemetry
+
+The installer writes a birth certificate into **your** vault — `PROVENANCE.md`
+plus a genesis record with the install date, the template commit and the clone
+source — so installs and forks keep their lineage and a zero-point for their
+own statistics forever. **Nothing is sent anywhere.** There is no analytics,
+no phone-home, no unique identifiers leaving your machine; the only adoption
+numbers we ever see are GitHub's own public stars/forks counters. If you find
+any network call in the install path that is not your own git clone, that is
+a bug — report it.
+
 ## Requirements
 
 - macOS (launchd jobs, Keychain integration optional) or Linux (cron equivalents; core tools are portable).

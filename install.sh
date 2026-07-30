@@ -128,6 +128,34 @@ export SPINE_ROOT="$MEMORY_ROOT"
 "$TOOLS_DIR/bin/spine-gen" >/dev/null
 find "$MEMORY_ROOT" -name '*.md' -not -path '*/.git/*' -print0 | xargs -0 "$TOOLS_DIR/bin/spine-secrets-lint"
 
+# GENESIS RECORD — the vault's own birth certificate. Installs and forks keep
+# their lineage forever: the date the memory started, which template commit it
+# came from and where that clone originated. Written as a normal record (so it
+# rides journal/history like everything else) + a machine-readable
+# PROVENANCE.md at the vault root. No network, no phone-home: provenance
+# lives with the OWNER of the data, not with us.
+SRC_COMMIT="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+SRC_URL="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo unknown)"
+INSTALL_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+FIRST_SCOPE="$(echo "$PROJECTS" | cut -d, -f1)"
+if [ ! -f "$MEMORY_ROOT/PROVENANCE.md" ]; then
+  cat > "$MEMORY_ROOT/PROVENANCE.md" <<PROV
+# Provenance
+
+- installed: $INSTALL_DATE
+- template_commit: $SRC_COMMIT
+- template_source: $SRC_URL
+- upstream: https://github.com/AlexBridgesman/memory-spine
+PROV
+  SPINE_NO_GATE=1 SPINE_ROOT="$MEMORY_ROOT" SPINE_TOOLS_DIR="$TOOLS_DIR" \
+    "$TOOLS_DIR/bin/spine-new" --type fact --project "$FIRST_SCOPE" --agent user \
+    --title "Memory Spine installed — genesis record" --confidence verified \
+    --summary "This memory started on $INSTALL_DATE from template commit $SRC_COMMIT ($SRC_URL)." \
+    --body "Lineage of this vault: installed $INSTALL_DATE, template commit $SRC_COMMIT, cloned from $SRC_URL, upstream https://github.com/AlexBridgesman/memory-spine. Statistics of this memory count from this record. [[$FIRST_SCOPE]]" \
+    >/dev/null 2>&1 || true
+fi
+
+
 if [ "$GIT_INIT" = "1" ]; then
   if [ ! -d "$MEMORY_ROOT/.git" ]; then
     git -C "$MEMORY_ROOT" init -b main >/dev/null 2>&1 || git -C "$MEMORY_ROOT" init >/dev/null

@@ -1,5 +1,10 @@
 # Memory Spine
 
+![CI](https://github.com/AlexBridgesman/memory-spine/actions/workflows/ci.yml/badge.svg)
+![Stars](https://img.shields.io/github/stars/AlexBridgesman/memory-spine?style=flat)
+![Forks](https://img.shields.io/github/forks/AlexBridgesman/memory-spine?style=flat)
+![License](https://img.shields.io/github/license/AlexBridgesman/memory-spine)
+
 **One long-term memory for every AI agent on your machine.**
 
 Claude Code, Codex, Cursor, Aider, any CLI agent — all share a single local memory: plain markdown in a git repo, one disciplined write path, automatic context injection at session start, and a default-deny access gate.

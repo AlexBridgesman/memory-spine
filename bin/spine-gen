@@ -10,7 +10,7 @@ Packet capped by PACKET_BYTES with explicit truncation labels in the text.
 import os, re, sys, datetime
 
 ROOT = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
-TOOLS = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_TOOLS_DIR", "~/dev/memory-spine")))
+TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "_index")
 # Root path as displayed inside generated text (packet hints), home collapsed to ~
 DISPLAY_ROOT = re.sub("^" + re.escape(os.path.expanduser("~")), "~", ROOT, count=1)
@@ -137,8 +137,9 @@ def line(r):
     s = "⛔" if r.get("status") == "blocked" else "•"
     extra = f" → {r.get('for_agent')}" if r.get("for_agent") else ""
     guest = f" [shared: home {r['_home']}]" if r.get("_home") else ""
+    sup = " [superseded]" if r.get("_superseded") else ""
     pin = "📌 " if str(r.get("pinned")).lower() == "true" else ""
-    return f"{s} {pin}[{t}] {r.get('title','(untitled)')}{extra}{guest} ({os.path.basename(r['_path'])})"
+    return f"{s} {pin}[{t}] {r.get('title','(untitled)')}{extra}{guest}{sup} ({os.path.basename(r['_path'])})"
 
 def gen_project(project, inbox_n=0):
     for td in TYPEDIRS:   # a scope listed in the dictionary always has its folders
@@ -154,6 +155,24 @@ def gen_project(project, inbox_n=0):
                              r.get("created") if isinstance(r.get("created"), str) else ""),
               reverse=True)
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # SUPERSEDED RECORDS OUT OF THE CURRENT VIEW (external review 2026-07-30:
+    # "immutability piles up stale records"). A record whose ULID is the
+    # `supersedes:` target of another record is no longer current knowledge:
+    # the auto-channels (packet) drop it, the INDEX labels it. The file itself
+    # stays forever — that is the whole point of supersede-instead-of-edit.
+    superseded_ids = set()
+    for r in recs:
+        s = r.get("supersedes")
+        if isinstance(s, str) and s.strip():
+            superseded_ids.add(s.strip())
+
+    def rec_ulid(r):
+        m = re.search(r"--([0-9A-HJKMNP-TV-Z]{26})\.md$", r["_path"])
+        return m.group(1) if m else ""
+
+    for r in recs:
+        r["_superseded"] = rec_ulid(r) in superseded_ids
+
     act = [r for r in recs if r.get("status") in ("active", "blocked")]
     # CONTRACT (README): private — explicit search only; local_only — never in packet/INDEX.
     # Only sensitivity: normal goes into INDEX groups (fix from the 2026-07-04 audit:
@@ -199,7 +218,8 @@ def gen_project(project, inbox_n=0):
     if project != "inbox" and inbox_n > 0:
         P.append(f"⚠ INBOX: {inbox_n} record(s) awaiting triage — ask the owner or run spine-triage.")
     P.append("")
-    pk = [r for r in act if in_packet(r)]
+    pk = [r for r in act if in_packet(r) and not r["_superseded"]]
+    superseded_n = len([r for r in act if in_packet(r) and r["_superseded"]])
     groups = [("BLOCKED", [r for r in pk if r.get("status") == "blocked"]),
               ("OPEN THREADS", [r for r in pk if r.get("type") == "thread" and r.get("status") != "blocked"]),
               ("DECISIONS", [r for r in pk if r.get("type") == "decision"]),
@@ -236,7 +256,8 @@ def gen_project(project, inbox_n=0):
         body = _render(keep, sum_len)
         shipped = sum(keep.values())
         tail = [f"(Deeper: rg over {DISPLAY_ROOT}/{project}/ or INDEX.md; "
-                f"records beyond this packet: {len(recs) - shipped})",
+                f"records beyond this packet: {len(recs) - shipped}"
+                + (f"; superseded hidden: {superseded_n}" if superseded_n else "") + ")",
                 "=== END MEMORY PACKET ==="]
         if len("\n".join(P + body + tail).encode()) <= PACKET_BYTES:
             chosen = sum_len
@@ -245,7 +266,8 @@ def gen_project(project, inbox_n=0):
         body = _render(keep, chosen)
         shipped = sum(keep.values())
         tail = [f"(Deeper: rg over {DISPLAY_ROOT}/{project}/ or INDEX.md; "
-                f"records beyond this packet: {len(recs) - shipped})",
+                f"records beyond this packet: {len(recs) - shipped}"
+                + (f"; superseded hidden: {superseded_n}" if superseded_n else "") + ")",
                 "=== END MEMORY PACKET ==="]
         out = "\n".join(P + body + tail)
         if len(out.encode()) <= PACKET_BYTES:

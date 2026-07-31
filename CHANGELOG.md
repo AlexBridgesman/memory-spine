@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.1.1 — 2026-07-31
+
+- **`spine-promote`: a confidence NOOP no longer swallows `--reviewed-by-owner`**
+  (caught live in production: the early return exited before the reviewed_by
+  insertion branch, so the flag was lost silently). When the level is already
+  at the target and reviewed_by is absent, the review fields are still set
+  with an honest Status-history line; the output distinguishes a full NOOP
+  from "confidence unchanged, +reviewed_by: owner". The candidate/legacy
+  promotion gate is untouched.
+- **Remote dead-letter drain** (`drain_remote_host` in `config/notify.conf`) —
+  a machine that must hold no notification secrets relays through another
+  machine of yours: its queue is pulled over ssh every sync cycle, crash-safe
+  (a stable `.draining` rename, removal only after the local append — the
+  worst failure costs a duplicate message, never a loss). The README promised
+  this pattern; now the code ships it.
+- **Inbox state is measured by honest signals only** (docs/AGENT_RULES.md) —
+  never by counting files in the inbox directory: no-delete keeps archived
+  records in place forever, so file counts raise false "N waiting" alarms.
+- Self-test grows to **18** (T16: a promote NOOP keeps reviewed_by — dry-run
+  intent, real write, full-NOOP repeat, all verified live on a transient).
+
 Everything below ships as **v0.1.0** — the first tagged point of reference
 for installs and forks.
 

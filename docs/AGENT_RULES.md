@@ -24,6 +24,7 @@ WRITING (iron rules)
 
 NEW TOPICS
 - A topic that fits no scope → spine-new --project inbox --proposed-scope "name". Never force it into the wrong scope, never stay silent. Only the owner triages the inbox.
+- Measure the inbox by its honest signals only — the packet footer, the triage report (bare `spine-triage`), or the Stop-hook reminder. Never by counting files in the inbox directory: the no-delete policy keeps archived records in place forever, so a file count reads "N waiting" when the true answer is zero — a false alarm that drags the owner into a pointless triage pass.
 
 CHECKPOINTS (anti-amnesia)
 - Write at checkpoints, not at session end: after EVERY completed stage (merge, deploy, fix, plan change) record it IMMEDIATELY. Context compaction can strike at any moment and nothing will warn you; unwritten = lost.

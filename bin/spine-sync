@@ -163,6 +163,42 @@ rotate_log "$LOG"   # after the lock -- concurrent rotation must not clobber an 
 # do not hammer the secret manager / curl every five minutes.
 DLFILE="$LOGDIR/notify-deadletter.log"
 DLRETRY="$LOGDIR/.deadletter-retry"
+
+# --- optional remote dead-letter drain: a machine of yours that must hold NO
+# notification secrets leaves its notify channels empty; its messages stack up
+# in its LOCAL dead-letter queue, and this machine pulls them over ssh each
+# cycle and relays them through its own channel together with the local queue
+# below. Enable via drain_remote_host= in config/notify.conf. Crash-safe
+# protocol: a stable .draining name (not a PID) -- a half-finished pull is
+# picked up by the next tick; the remote rm happens ONLY after the local
+# append, so a failure at the worst point costs one duplicate "delayed"
+# message, never a loss. An unreachable remote simply leaves messages waiting
+# there. The ssh key must work non-interactively (BatchMode: no passphrase).
+NCONF="${SPINE_NOTIFY_CONF:-$BIN/../config/notify.conf}"
+DRAIN_HOST=$(sed -n 's/^drain_remote_host=//p' "$NCONF" 2>/dev/null | head -1)
+if [ -n "$DRAIN_HOST" ]; then
+  DRAIN_TAG=$(sed -n 's/^drain_remote_tag=//p' "$NCONF" 2>/dev/null | head -1)
+  [ -n "$DRAIN_TAG" ] || DRAIN_TAG="$DRAIN_HOST"
+  RDL=$(sed -n 's/^drain_remote_queue=//p' "$NCONF" 2>/dev/null | head -1)
+  [ -n "$RDL" ] || RDL='~/Library/Logs/AgentMemory/notify-deadletter.log'
+  # $RDL stays unquoted inside the remote command so ~ expands on the remote
+  RREMOTE=$(ssh -o BatchMode=yes -o ConnectTimeout=6 "$DRAIN_HOST" \
+    "{ [ -f $RDL.draining ] || { [ -s $RDL ] && mv $RDL $RDL.draining; }; } 2>/dev/null; cat $RDL.draining 2>/dev/null" 2>/dev/null)
+  if [ -n "$RREMOTE" ]; then
+    RN=0
+    while IFS=$'\t' read -r rts rtag rmsg; do
+      [ -n "$rmsg" ] || continue
+      printf '%s\t%s\t%s\n' "$rts" "$DRAIN_TAG:$rtag" "[$DRAIN_TAG] $rmsg" >> "$DLFILE"
+      RN=$((RN+1))
+    done <<< "$RREMOTE"
+    if [ "$RN" -gt 0 ]; then
+      ssh -o BatchMode=yes -o ConnectTimeout=6 "$DRAIN_HOST" "rm -f $RDL.draining" 2>/dev/null \
+        || log "remote drain: remote rm failed -- possible duplicate next tick"
+      log "remote drain: accepted $RN message(s) from $DRAIN_HOST into the local queue"
+    fi
+  fi
+fi
+
 if [ -s "$DLFILE" ]; then
   if [ ! -f "$DLRETRY" ] || [ $(( $(date +%s) - $(mtime "$DLRETRY") )) -gt 900 ]; then
     log "deadletter: draining the queue ($(wc -l < "$DLFILE" | tr -d ' ') message(s))"

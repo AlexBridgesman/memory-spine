@@ -13,6 +13,11 @@ Usage:
 
 Edits only: the `confidence:` line, (optionally) adds `reviewed_by`/`reviewed_at`,
 and appends one line to `## Status history`. Does not commit — spine-sync does.
+
+A confidence NOOP does NOT cancel --reviewed-by-owner: when the level is
+already at the target but reviewed_by is absent, the review fields are still
+set and the output honestly distinguishes a full NOOP from
+"confidence unchanged, +reviewed_by: owner".
 """
 import argparse
 import datetime
@@ -109,33 +114,50 @@ def main():
     text = path.read_text(encoding="utf-8", errors="replace")
     m = re.search(r"^confidence:\s*(\S+)\s*$", text, re.M)
     current = m.group(1) if m else "(missing)"
-    if current == a.confidence:
-        print(f"NOOP: {path} already confidence={a.confidence}")
-        return
-    if current not in ("candidate", "legacy", "(missing)"):
-        die(f"promotion is only possible from candidate/legacy; current: {current}")
 
     now = datetime.datetime.now(datetime.timezone.utc)
     today = now.date().isoformat()
     ts = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    if m:
-        new_text = re.sub(r"^confidence:\s*\S+\s*$", f"confidence: {a.confidence}", text, count=1, flags=re.M)
+    # Set reviewed_by (and mention it in the output) only when it is genuinely
+    # absent — the "(+reviewed_by: owner)" suffix used to follow the flag alone.
+    add_review = a.reviewed_by_owner and "reviewed_by:" not in text
+
+    if current == a.confidence:
+        if not add_review:
+            print(f"NOOP: {path} already confidence={a.confidence}"
+                  + (", reviewed_by already set" if a.reviewed_by_owner else ""))
+            return
+        # An early NOOP-return used to swallow --reviewed-by-owner silently.
+        # The level stays untouched (the candidate/legacy gate below is not
+        # about this path): only reviewed_by/reviewed_at plus an honest
+        # trail line in Status history.
+        new_text = text
+        change = f"confidence unchanged ({current}), +reviewed_by: owner"
+        hist_event = f"reviewed_by: owner (confidence {current} unchanged)"
     else:
-        new_text = re.sub(r"^(sensitivity:.*)$", rf"\1\nconfidence: {a.confidence}", text, count=1, flags=re.M)
-    if a.reviewed_by_owner and "reviewed_by:" not in new_text:
+        if current not in ("candidate", "legacy", "(missing)"):
+            die(f"promotion is only possible from candidate/legacy; current: {current}")
+        if m:
+            new_text = re.sub(r"^confidence:\s*\S+\s*$", f"confidence: {a.confidence}", text, count=1, flags=re.M)
+        else:
+            new_text = re.sub(r"^(sensitivity:.*)$", rf"\1\nconfidence: {a.confidence}", text, count=1, flags=re.M)
+        change = f"{current} -> {a.confidence}" + (" (+reviewed_by: owner)" if add_review else "")
+        hist_event = f"confidence {current} -> {a.confidence}"
+
+    if add_review:
         new_text = re.sub(r"^(confidence:.*)$",
                           rf"\1\nreviewed_by: owner\nreviewed_at: {today}",
                           new_text, count=1, flags=re.M)
 
-    hist = f"- {ts} — {a.agent}: confidence {current} -> {a.confidence}. Reason: {clean_reason}"
+    hist = f"- {ts} — {a.agent}: {hist_event}. Reason: {clean_reason}"
     if "\n## Status history\n" in new_text:
         new_text = new_text.rstrip() + "\n" + hist + "\n"
     else:
         new_text = new_text.rstrip() + "\n\n## Status history\n" + hist + "\n"
 
     if a.dry_run:
-        print(f"DRY-RUN: {path}: {current} -> {a.confidence}")
+        print(f"DRY-RUN: {path}: {change}")
         return
 
     path.write_text(new_text, encoding="utf-8")
@@ -144,8 +166,8 @@ def main():
     print(r.stdout, end="")
     if r.returncode != 0:
         die(f"validation failed after the promotion — resolve manually: {path}", code=2)
-    print(f"PROMOTED: {path.name}: {current} -> {a.confidence}"
-          + (" (+reviewed_by: owner)" if a.reviewed_by_owner else ""))
+    verdict = "PROMOTED" if current != a.confidence else "REVIEWED"
+    print(f"{verdict}: {path.name}: {change}")
 
 
 if __name__ == "__main__":

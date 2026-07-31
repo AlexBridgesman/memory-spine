@@ -65,7 +65,7 @@ expect_refusal() { # $1=description; then the command. We expect EXACTLY exit 1 
 
 # T0: tool pre-check — without it the negative tests below would lie
 PRE_OK=1
-for t in "$GITLEAKS" "$PY" "$GIT" "$BIN/spine-new" "$BIN/spine-validate" "$BIN/spine-gen" "$BIN/spine-packet"; do
+for t in "$GITLEAKS" "$PY" "$GIT" "$BIN/spine-new" "$BIN/spine-validate" "$BIN/spine-gen" "$BIN/spine-packet" "$BIN/spine-promote"; do
   [ -x "$t" ] || { bad "T0 tool missing/not executable: $t"; PRE_OK=0; }
 done
 [ -f "$ROOT/.gitleaks.toml" ] || { bad "T0 missing $ROOT/.gitleaks.toml"; PRE_OK=0; }
@@ -267,6 +267,37 @@ else
 fi
 rm -f "$F15" 2>/dev/null
 find "$ROOT/$FIRST_SCOPE" -name "*selftest-noscan*" -delete 2>/dev/null
+
+# T16: spine-promote — a confidence NOOP does NOT swallow --reviewed-by-owner
+# (caught live 2026-07-30 on verified->verified: the early return exited before
+# the reviewed_by insertion branch, the flag was lost silently). Live: dry-run
+# shows the intent and does NOT write; the real call sets reviewed_by/reviewed_at
+# plus an honest trail line in Status history; a repeat is a full NOOP
+# ("reviewed_by already set").
+F16=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+  --title "selftest promote reviewed transient" --confidence verified \
+  --body "review me. [[$FIRST_SCOPE]]" 2>/dev/null | tail -1)
+[ -f "$F16" ] || bad "T16 setup: transient was not created"
+DR16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent claude-code \
+  --reviewed-by-owner --reason "selftest T16 dry" --dry-run 2>&1)
+DRYW16=$(grep -c "^reviewed_by:" "$F16" 2>/dev/null)   # must still be 0 after dry-run
+OUT16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent claude-code \
+  --reviewed-by-owner --reason "selftest T16" 2>&1)
+NOOP16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent claude-code \
+  --reviewed-by-owner --reason "selftest T16 repeat" 2>&1)
+if echo "$DR16" | grep -qF "confidence unchanged (verified), +reviewed_by: owner" \
+   && [ "${DRYW16:-x}" = "0" ] \
+   && echo "$OUT16" | grep -qF "confidence unchanged (verified), +reviewed_by: owner" \
+   && grep -q "^reviewed_by: owner$" "$F16" 2>/dev/null \
+   && grep -q "^reviewed_at: " "$F16" 2>/dev/null \
+   && grep -qF "reviewed_by: owner (confidence verified unchanged). Reason: selftest T16" "$F16" 2>/dev/null \
+   && echo "$NOOP16" | grep -qF "reviewed_by already set"; then
+  ok "T16 promote: a confidence NOOP does not lose reviewed_by"
+else
+  bad "T16 promote loses/misreports reviewed_by (dry:$(echo "$DR16"|head -1) run:$(echo "$OUT16"|tail -1) rep:$(echo "$NOOP16"|head -1))"
+fi
+rm -f "$F16" 2>/dev/null
+find "$ROOT/$FIRST_SCOPE" -name "*selftest-promote-reviewed*" -delete 2>/dev/null
 
 echo "selftest: PASS $PASS / FAIL $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -94,7 +94,7 @@ A third-party desktop app once picked up a global agent profile during onboardin
 
 ## Reliability
 
-- `spine-selftest` — a 17-test suite covering the write path, inline secret refusal, the dedup gate, supersede semantics, packet generation and gate rules.
+- `spine-selftest` — an 18-test suite covering the write path, inline secret refusal, the dedup gate, supersede semantics, promotion review semantics, packet generation and gate rules.
 - `spine-health` — starvation alerts (a scope shipping <35% or zero facts), sync-gap detection, backup staleness.
 - A **dead-letter queue** for notifications: undeliverable alerts are retried by the sync cycle within minutes, never lost.
 - Atomic writes, locks with TTL, log rotation, fail-closed preflight before any commit.
@@ -128,7 +128,9 @@ Test with `spine-notify "hello"`, then load the launchd templates
 (`launchd/README.md`) so the digest and the sync-cycle delivery run on their
 own. Machines that must hold no secrets at all can leave both channels empty:
 messages stack up in their local dead-letter queue, and another machine of
-yours can drain it over ssh and relay through its own channel.
+yours can drain it over ssh and relay through its own channel — set
+`drain_remote_host` in the relaying machine's `notify.conf` (crash-safe: the
+worst failure costs a duplicate message, never a loss).
 
 ## Safety rules
 

@@ -27,3 +27,20 @@ refresh_cmd=
 # Numeric Telegram user id allowed to command spine-keeper (NOT a secret).
 # Empty = the keeper ignores everyone (no TOFU pairing).
 allowlist=
+#
+# Optional: remote dead-letter drain. Another machine of yours that must hold
+# NO notification secrets leaves ntfy_url/chat_id/token_cmd empty there; its
+# messages stack up in its local dead-letter queue, and THIS machine pulls
+# them over ssh every sync cycle and relays them through its own channel,
+# marked with the tag. Crash-safe: the remote queue is renamed to .draining
+# first and removed only after a successful local append — a failure at the
+# worst point costs a duplicate, never a loss.
+#   drain_remote_host: ssh destination (a Host alias from ~/.ssh/config whose
+#     key works non-interactively: BatchMode, no passphrase)
+#   drain_remote_tag:  short label prefixed to relayed messages
+#     (default: the host value)
+#   drain_remote_queue: queue path on the remote (default:
+#     ~/Library/Logs/AgentMemory/notify-deadletter.log)
+drain_remote_host=
+drain_remote_tag=
+drain_remote_queue=

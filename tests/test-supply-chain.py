@@ -26,6 +26,8 @@ for workflow in workflows:
                 errors.append(f"{workflow.name}:{line_no}: mutable container reference {image}")
 
 ci = (repo / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+if "on:\n  push:\n  pull_request:" not in ci:
+    errors.append("ci.yml: push checks do not cover exact candidate branches")
 if "persist-credentials: false" not in ci:
     errors.append("ci.yml: checkout credentials are persisted")
 if "--network none" not in ci or ':/repo:ro' not in ci:

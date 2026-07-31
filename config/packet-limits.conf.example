@@ -1,0 +1,11 @@
+# Per-scope MEMORY PACKET caps in bytes. Copy to packet-limits.conf to use.
+# Format: scope<TAB>bytes  (or scope=bytes). Lines starting with # are ignored.
+# Scopes absent from this file keep the built-in default (14000 bytes ~= 3.5k
+# tokens per injection). Floor: 4000 -- smaller values are clamped.
+#
+# When to raise a cap: spine-health reports packet starvation for a scope
+# (small coverage share AND a small absolute window). One oversized scope gets
+# breathing room here WITHOUT taxing the injection cost of every other scope.
+# Non-ASCII vaults hit caps sooner: UTF-8 spends 2+ bytes per character.
+#
+# my-biggest-scope	20000

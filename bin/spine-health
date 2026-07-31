@@ -209,8 +209,13 @@ for line in open(sys.argv[1], encoding="utf-8"):
     if passed < 20:
         continue
     pct = 100 * shipped // max(1, passed)
-    if pct < 35 or not has_facts:
-        bad.append(f"{proj} {pct}%{'' if has_facts else ' NO FACTS'}")
+    # 2026-07-31: on 180+ record scopes a fixed 35% is unreachable without tens
+    # of KB per injection (non-ASCII text costs 2+ bytes per character in
+    # UTF-8). Starvation = BOTH a small share AND a small absolute window:
+    # 55+ freshest records in the packet is a healthy state regardless of the
+    # percentage -- the rest is what INDEX and spine-recall are for.
+    if (pct < 35 and shipped < 55) or not has_facts:
+        bad.append(f"{proj} {pct}% ({shipped} in packet){'' if has_facts else ' NO FACTS'}")
 print("; ".join(bad))
 PYEOF
 )

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Per-scope packet caps** (`config/packet-limits.conf`, floor 4000, default
+  unchanged at 14000) — born in production: a 164-record scope starved at 34%
+  packet coverage while smaller scopes had headroom. One scope gets breathing
+  room without raising the injection cost everywhere.
+- **Honest starvation threshold** in `spine-health`: starvation now requires
+  BOTH a small coverage share (<35%) and a small absolute window (<55 records
+  shipped) — on large non-ASCII vaults a fixed percentage is unreachable
+  (UTF-8 spends 2+ bytes per character) and produced false alarms.
+- Contract test `tests/test-packet-limits.sh` (cap applied, default preserved,
+  floor clamped, malformed line warns and never aborts).
+
 ## v0.1.1 — 2026-07-31
 
 - **`spine-promote`: a confidence NOOP no longer swallows `--reviewed-by-owner`**

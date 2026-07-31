@@ -99,6 +99,7 @@ A third-party desktop app once picked up a global agent profile during onboardin
 ## Reliability
 
 - `spine-selftest` — an 18-test suite covering write mechanics, inline secret refusal, the dedup gate, supersede semantics, promotion review semantics and packet generation. Access-gate behavior is tested separately.
+- **Per-scope packet caps** (`config/packet-limits.conf`) — one oversized scope gets a bigger context window without taxing every other scope's injection cost; starvation is judged by share AND absolute window size, so large vaults do not false-alarm.
 - `spine-health` — starvation alerts (a scope shipping <35% or zero facts), sync-gap detection, backup staleness.
 - A **dead-letter queue** for notifications: undeliverable alerts remain visible locally and can be retried by the sync cycle.
 - Atomic writes, locks with TTL, log rotation, fail-closed preflight before any commit.

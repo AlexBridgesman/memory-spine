@@ -23,6 +23,8 @@ import sys
 
 ROOT = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
 TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(TOOLS, "lib"))
+from spine_paths import default_log_root
 def _config_dir():
     """Same resolution order as spine-gen (keep in sync)."""
     env = os.environ.get("SPINE_CONFIG_DIR")
@@ -139,10 +141,19 @@ def main():
     syn_groups = []
     syn_path = os.path.join(CFG, "synonyms.tsv")
     if os.path.exists(syn_path):
-        for line in open(syn_path, encoding="utf-8"):
-            line = line.strip()
-            if line and not line.startswith("#"):
-                syn_groups.append({w.casefold() for w in line.split()})
+        for line_no, raw in enumerate(open(syn_path, encoding="utf-8"), 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            term, sep, equivalents = line.partition("\t")
+            words = [term.strip(), *(w.strip() for w in equivalents.split(","))]
+            words = [w.casefold() for w in words if w]
+            if not sep or len(words) < 2:
+                sys.stderr.write(
+                    f"spine-recall: malformed synonyms.tsv row {line_no}; "
+                    "expected term<TAB>comma,separated,equivalents\n")
+                continue
+            syn_groups.append(set(words))
 
     def variants(term):
         v = {term}
@@ -363,7 +374,7 @@ def main():
     # TELEMETRY (2026-07-28): without it, "search keeps missing" stays unprovable —
     # the 2026-07-28 audit found that over 3 weeks not a single miss was measurable.
     try:
-        with open(os.path.expanduser("~/Library/Logs/AgentMemory/recall.log"),
+        with open(os.path.join(os.environ.get("SPINE_LOG_DIR", str(default_log_root())), "recall.log"),
                   "a", encoding="utf-8") as lf:
             import time as _t
             mode = "or" if or_mode else ("drop-one" if dropped_term else "and")

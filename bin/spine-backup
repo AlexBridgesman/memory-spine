@@ -8,10 +8,11 @@
 # optionally a StartOnMount variant for plug-in-and-back-up workflows.
 export LANG="${LANG:-en_US.UTF-8}"   # UTF-8 so non-ASCII text in banners survives launchd's minimal environment
 set -u
-LOGDIR="$HOME/Library/Logs/AgentMemory"
-LOG="$LOGDIR/backup.log"
 BIN="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
+. "$TOOLS/lib/spine_paths.sh"
+LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
+LOG="$LOGDIR/backup.log"
 SRC="${SPINE_ROOT:-$HOME/AgentMemory}/"
 mkdir -p "$LOGDIR"
 

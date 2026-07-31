@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# spine-uninstall — disable the installed tool copy without deleting memory.
+set -euo pipefail
+
+BIN="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
+ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+APPLY=0
+ASSUME_YES=0
+
+usage() {
+  cat <<'USAGE'
+Usage: spine-uninstall [--apply] [--yes]
+
+The default is a read-only plan. Apply removes only the canonical vault hook
+and archives a copied tools directory beside itself. It never deletes the
+memory vault, git history, local mirror, backups, or a source git checkout.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --apply) APPLY=1; shift ;;
+    --dry-run) APPLY=0; shift ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+TOOLS="$(python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$TOOLS")"
+ROOT="$(python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$ROOT")"
+case "$TOOLS" in
+  /|"$HOME"|"$ROOT") echo "Refusing unsafe tools directory: $TOOLS" >&2; exit 2 ;;
+esac
+
+HOOK="$ROOT/.git/hooks/pre-commit"
+CANON="$TOOLS/hooks/pre-commit"
+STAMP="$(date -u +%Y%m%d-%H%M%S)"
+ARCHIVE="${TOOLS}.uninstalled-${STAMP}"
+[ ! -e "$ARCHIVE" ] || ARCHIVE="${ARCHIVE}-$$"
+
+if [ -d "$TOOLS/.git" ]; then
+  TOOLS_ACTION="keep source git checkout at $TOOLS"
+else
+  TOOLS_ACTION="move tools to $ARCHIVE"
+fi
+if [ -f "$HOOK" ] && [ -f "$CANON" ] && cmp -s "$CANON" "$HOOK"; then
+  HOOK_ACTION="remove installed canonical hook $HOOK"
+elif [ -e "$HOOK" ]; then
+  HOOK_ACTION="keep owner-modified hook $HOOK"
+else
+  HOOK_ACTION="no installed hook found"
+fi
+
+cat <<EOF
+Memory Spine uninstall plan
+  Tools:  $TOOLS_ACTION
+  Hook:   $HOOK_ACTION
+  Vault:  KEEP $ROOT
+  Mirror: KEEP (all local git history)
+
+Any launchd/cron jobs were configured separately and must be disabled
+separately before uninstalling the tool copy.
+EOF
+
+if [ "$APPLY" != 1 ]; then
+  echo
+  echo "DRY RUN — no files were changed. Re-run with --apply to continue."
+  exit 0
+fi
+
+if [ "$ASSUME_YES" != 1 ]; then
+  printf "Apply this non-destructive uninstall plan? [y/N] "
+  read -r reply
+  case "$reply" in y|Y|yes|YES) ;; *) echo "Cancelled."; exit 1 ;; esac
+fi
+
+HOOK_BACKUP=""
+TOOLS_MOVED=0
+
+restore_on_failure() {
+  rc="$1"
+  [ "$rc" -ne 0 ] || return 0
+  set +e
+  if [ "$TOOLS_MOVED" = 1 ] && [ -d "$ARCHIVE" ] && [ ! -e "$TOOLS" ]; then
+    mv "$ARCHIVE" "$TOOLS" >/dev/null 2>&1
+  fi
+  if [ -n "$HOOK_BACKUP" ] && [ -e "$HOOK_BACKUP" ] && [ ! -e "$HOOK" ]; then
+    mv "$HOOK_BACKUP" "$HOOK" >/dev/null 2>&1
+  fi
+  echo "Uninstall failed; prior tools/hook state restored where possible." >&2
+}
+on_exit() {
+  rc=$?
+  restore_on_failure "$rc"
+  exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 130' INT TERM HUP
+
+if [ -f "$HOOK" ] && [ -f "$CANON" ] && cmp -s "$CANON" "$HOOK"; then
+  HOOK_BACKUP="${HOOK}.spine-uninstall-${STAMP}-$$"
+  mv "$HOOK" "$HOOK_BACKUP"
+fi
+
+if [ -d "$TOOLS/.git" ]; then
+  TOOLS_RESULT="Source git checkout retained: $TOOLS"
+else
+  mv "$TOOLS" "$ARCHIVE"
+  TOOLS_MOVED=1
+  TOOLS_RESULT="Tools archived: $ARCHIVE"
+fi
+
+# Commit the transaction only after every state transition succeeded. Until
+# this point an EXIT/signal trap restores both the tools tree and canonical hook.
+if [ -n "$HOOK_BACKUP" ]; then
+  rm -f "$HOOK_BACKUP"
+  HOOK_BACKUP=""
+fi
+trap - EXIT INT TERM HUP
+
+echo "$TOOLS_RESULT"
+if [ "$TOOLS_MOVED" = 1 ]; then
+  echo "Rollback: mv '$ARCHIVE' '$TOOLS', then run the reviewed source install.sh --apply"
+fi
+
+echo "Vault retained: $ROOT"

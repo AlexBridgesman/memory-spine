@@ -5,7 +5,8 @@ FAIL=0
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 BIN="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
-REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$HOME/Library/AgentMemory/Remotes}"
+. "$TOOLS/lib/spine_paths.sh"
+REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$(spine_default_remote_root)}"
 PRIMARY_BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
 # Optional marker file proving the external backup volume is mounted
 # (e.g. /Volumes/YourBackupDisk/AgentMemoryBackup/.mounted). Empty = not configured.

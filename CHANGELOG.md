@@ -3,7 +3,7 @@
 ## v0.1.1 — 2026-07-31
 
 - **`spine-promote`: a confidence NOOP no longer swallows `--reviewed-by-owner`**
-  (caught live in production: the early return exited before the reviewed_by
+  (caught during live use: the early return exited before the reviewed_by
   insertion branch, so the flag was lost silently). When the level is already
   at the target and reviewed_by is absent, the review fields are still set
   with an honest Status-history line; the output distinguishes a full NOOP
@@ -12,8 +12,8 @@
 - **Remote dead-letter drain** (`drain_remote_host` in `config/notify.conf`) —
   a machine that must hold no notification secrets relays through another
   machine of yours: its queue is pulled over ssh every sync cycle, crash-safe
-  (a stable `.draining` rename, removal only after the local append — the
-  worst failure costs a duplicate message, never a loss). The README promised
+  (a stable `.draining` rename, removal only after the local append — interrupted
+  transfers are designed to retain a retryable copy, at the cost of duplicates). The README promised
   this pattern; now the code ships it.
 - **Inbox state is measured by honest signals only** (docs/AGENT_RULES.md) —
   never by counting files in the inbox directory: no-delete keeps archived
@@ -31,9 +31,9 @@ for installs and forks.
   the vault and a crash could leave plaintext behind.
 - **Missing scanner is fail-closed** (mirrors the access gate); `SPINE_NO_SCAN=1`
   is the explicit escape.
-- **Bypasses are always audited** — with the gate module missing,
-  `SPINE_NO_GATE=1` / `SPINE_NO_SCAN=1` write their own access-log lines
-  (`ALLOW-NOGATE` / `ALLOW-NOSCAN`).
+- **Bypasses emit distinct best-effort audit events** — with the gate module
+  missing, `SPINE_NO_GATE=1` / `SPINE_NO_SCAN=1` attempt their own access-log
+  lines (`ALLOW-NOGATE` / `ALLOW-NOSCAN`); filesystem failures can still block logging.
 - **Recall language packs** (`config/recall-lang.conf`) — stop words and
   stemming suffixes are configurable per language and merge with the built-in
   English lists; Ukrainian and Russian ship enabled out of the box.

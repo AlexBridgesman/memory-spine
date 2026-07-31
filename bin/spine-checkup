@@ -7,8 +7,9 @@ export LANG="${LANG:-en_US.UTF-8}"   # keep UTF-8 in osascript banners regardles
 set -u
 BIN="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
+. "$TOOLS/lib/spine_paths.sh"
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
-LOGDIR="${SPINE_LOG_DIR:-$HOME/Library/Logs/AgentMemory}"
+LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 PREFIX="${1:-Spine checkup}"
 OK=0; BAD=0; LINES=""
 

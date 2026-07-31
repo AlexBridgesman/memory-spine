@@ -13,7 +13,7 @@ ntfy_url=
 chat_id=
 # Command that prints the bot token to stdout. Examples:
 #   token_cmd=security find-generic-password -s memory-spine/TELEGRAM_BOT_TOKEN -w   (macOS Keychain)
-#   token_cmd=op read "op://Private/my-bot/credential"                               (1Password CLI)
+#   token_cmd=op read "op://<vault>/<item>/<field>"                                  (1Password CLI placeholder)
 #   token_cmd=pass show telegram/spine-bot                                           (pass)
 token_cmd=
 # Optional (macOS): cache the token in the login Keychain under service
@@ -32,9 +32,9 @@ allowlist=
 # NO notification secrets leaves ntfy_url/chat_id/token_cmd empty there; its
 # messages stack up in its local dead-letter queue, and THIS machine pulls
 # them over ssh every sync cycle and relays them through its own channel,
-# marked with the tag. Crash-safe: the remote queue is renamed to .draining
-# first and removed only after a successful local append — a failure at the
-# worst point costs a duplicate, never a loss.
+# marked with the tag. The remote queue is renamed to .draining first and removed
+# only after a successful local append; interrupted transfers are designed to
+# retain a retryable copy, at the cost of possible duplicates.
 #   drain_remote_host: ssh destination (a Host alias from ~/.ssh/config whose
 #     key works non-interactively: BatchMode, no passphrase)
 #   drain_remote_tag:  short label prefixed to relayed messages

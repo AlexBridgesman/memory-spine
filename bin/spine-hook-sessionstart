@@ -5,9 +5,12 @@
 # heartbeat + log. stdout of this hook goes straight into the session context.
 export LANG="${LANG:-en_US.UTF-8}"   # stable UTF-8 output regardless of the launchd/hook environment
 set -u
+BINDIR="$(cd "$(dirname "$0")" && pwd)"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BINDIR")}"
+. "$TOOLS/lib/spine_paths.sh"
 SPINE_ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 PACKETS="$SPINE_ROOT/_index"
-LOGDIR="${SPINE_LOG_DIR:-$HOME/Library/Logs/AgentMemory}"
+LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 HOOKLOG="$LOGDIR/hook.log"
 exec 2>>"$HOOKLOG" || exec 2>/dev/null   # errors go to the log, never into the session
 
@@ -40,7 +43,6 @@ fi
 
 # packet resolution is factored into spine-packet (shared with the pull channel
 # used by agents that have no hooks)
-BINDIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT=$("$BINDIR/spine-packet" --cwd "$CWD" --resolve 2>>"$HOOKLOG")
 RC=$?
 

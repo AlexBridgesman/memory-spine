@@ -1,0 +1,36 @@
+name: release-integrity
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact tag or commit to package
+        required: true
+        default: v0.1.1
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || inputs.ref || github.sha }}
+      - name: Build archive and integrity manifest
+        env:
+          RELEASE_REF: ${{ github.event.pull_request.head.sha || inputs.ref || github.sha }}
+        run: scripts/build-release.sh "$RELEASE_REF" dist
+      - name: Verify manifest
+        run: cd dist && sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: memory-spine-release-integrity
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

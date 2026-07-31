@@ -7,7 +7,9 @@ export LANG="${LANG:-en_US.UTF-8}"   # UTF-8 so non-ASCII text in banners surviv
 set -u
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 BIN="$(cd "$(dirname "$0")" && pwd)"
-LOGDIR="$HOME/Library/Logs/AgentMemory"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
+. "$TOOLS/lib/spine_paths.sh"
+LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 FORCE="${1:-}"
 # The for_agent identity that means "the owner" (must match config/agents.txt)
 OWNER="${SPINE_OWNER_AGENT:-user}"

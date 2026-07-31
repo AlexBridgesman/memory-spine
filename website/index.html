@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory Spine — local-first memory for AI agents</title>
+<meta name="description" content="Local-first shared memory for CLI agents: plain Markdown in git, a validated write path, bounded context packets, and an access guardrail. No database or hosted service.">
+<link rel="canonical" href="https://memory.bridges.community/">
+<link rel="alternate" hreflang="en" href="https://memory.bridges.community/">
+<link rel="alternate" hreflang="uk" href="https://memory.bridges.community/?lang=ua">
+<link rel="alternate" hreflang="x-default" href="https://memory.bridges.community/">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧠</text></svg>">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Memory Spine — local-first memory for AI agents">
+<meta property="og:description" content="Shared agent memory in plain Markdown and git. No database or hosted service.">
+<meta property="og:url" content="https://memory.bridges.community">
+<meta property="og:image" content="https://memory.bridges.community/assets/og.png">
+<meta property="og:locale" content="en_US">
+<meta property="og:locale:alternate" content="uk_UA">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Memory Spine","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","url":"https://memory.bridges.community/","codeRepository":"https://github.com/AlexBridgesman/memory-spine","license":"https://opensource.org/license/mit"}</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<style>
+  /* Kora-inspired structure · Bridges brand (mono + #38BDF8, neural motif)
+     Liquid glass: параметри зняті з живого рендера компонента 21st.dev
+     (designali-in/liquid-glass-button) і переписані у vanilla CSS.
+     Кнопки: displacement scale 70. Панелі: мʼякший фільтр (scale 18) — на великій
+     площі агресивне зміщення читалось би як брак, а не як скло. */
+  :root {
+    --bg: #FAFAF9; --ink: #0E0F11; --muted: #5F6368;
+    --line: rgba(14, 15, 17, 0.10); --accent: #38BDF8;
+    --link: #0369A1; --focus: #0369A1;
+    --tint: rgba(255, 255, 255, 0.62);
+    --tint-strong: rgba(255, 255, 255, 0.78);
+    --img-dim: none;
+    /* великі поверхні (hero, band, плитки) — того ж кольору, що й тема */
+    --surface: rgba(255, 255, 255, 0.74);
+    --surface-2: rgba(255, 255, 255, 0.6);
+    --hero-ink: #0E0F11; --hero-muted: #5F6368;
+    --net-line: 56, 189, 248;
+    --lg-rim: 0 0 6px rgba(0,0,0,.03), 0 2px 6px rgba(0,0,0,.08),
+      inset 3px 3px .5px -3px rgba(0,0,0,.9), inset -3px -3px .5px -3px rgba(0,0,0,.85),
+      inset 1px 1px 1px -.5px rgba(0,0,0,.6), inset -1px -1px 1px -.5px rgba(0,0,0,.6),
+      inset 0 0 6px 6px rgba(0,0,0,.12), inset 0 0 2px 2px rgba(0,0,0,.06),
+      0 0 12px rgba(255,255,255,.15);
+    /* мʼякший обідок для великих поверхонь: той самий рецепт, зменшені радіуси */
+    --lg-rim-soft: 0 1px 3px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.06),
+      inset 2px 2px .5px -2px rgba(0,0,0,.55), inset -2px -2px .5px -2px rgba(0,0,0,.5),
+      inset 1px 1px 1px -.5px rgba(0,0,0,.3), inset -1px -1px 1px -.5px rgba(0,0,0,.3),
+      inset 0 0 8px 8px rgba(0,0,0,.05), 0 0 12px rgba(255,255,255,.12);
+    --f-body: -apple-system, system-ui, "Segoe UI", sans-serif;
+    --f-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0B0C0E; --ink: #F2F3F5; --muted: #9BA1A8;
+      --line: rgba(242, 243, 245, 0.12);
+      --tint: rgba(24, 27, 31, 0.55); --tint-strong: rgba(24, 27, 31, 0.72);
+      --surface: rgba(11, 12, 14, 0.82); --surface-2: rgba(19, 21, 24, 0.5);
+      --hero-ink: #F2F3F5; --hero-muted: #A6ADB4;
+      --link: #7DD3FC; --focus: #7DD3FC;
+      --img-dim: brightness(0.9);
+      --lg-rim: 0 0 8px rgba(0,0,0,.03), 0 2px 6px rgba(0,0,0,.08),
+        inset 3px 3px .5px -3.5px rgba(255,255,255,.09), inset -3px -3px .5px -3.5px rgba(255,255,255,.85),
+        inset 1px 1px 1px -.5px rgba(255,255,255,.6), inset -1px -1px 1px -.5px rgba(255,255,255,.6),
+        inset 0 0 6px 6px rgba(255,255,255,.12), inset 0 0 2px 2px rgba(255,255,255,.06),
+        0 0 12px rgba(0,0,0,.15);
+      --lg-rim-soft: 0 1px 3px rgba(0,0,0,.2), 0 8px 24px rgba(0,0,0,.28),
+        inset 2px 2px .5px -2px rgba(255,255,255,.08), inset -2px -2px .5px -2px rgba(255,255,255,.42),
+        inset 1px 1px 1px -.5px rgba(255,255,255,.3), inset -1px -1px 1px -.5px rgba(255,255,255,.3),
+        inset 0 0 8px 8px rgba(255,255,255,.04), 0 0 12px rgba(0,0,0,.2);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0B0C0E; --ink: #F2F3F5; --muted: #9BA1A8;
+    --line: rgba(242, 243, 245, 0.12);
+    --tint: rgba(24, 27, 31, 0.55); --tint-strong: rgba(24, 27, 31, 0.72);
+    --surface: rgba(11, 12, 14, 0.82); --surface-2: rgba(19, 21, 24, 0.5);
+    --hero-ink: #F2F3F5; --hero-muted: #A6ADB4;
+    --link: #7DD3FC; --focus: #7DD3FC;
+    --img-dim: brightness(0.9);
+    --lg-rim: 0 0 8px rgba(0,0,0,.03), 0 2px 6px rgba(0,0,0,.08),
+      inset 3px 3px .5px -3.5px rgba(255,255,255,.09), inset -3px -3px .5px -3.5px rgba(255,255,255,.85),
+      inset 1px 1px 1px -.5px rgba(255,255,255,.6), inset -1px -1px 1px -.5px rgba(255,255,255,.6),
+      inset 0 0 6px 6px rgba(255,255,255,.12), inset 0 0 2px 2px rgba(255,255,255,.06),
+      0 0 12px rgba(0,0,0,.15);
+    --lg-rim-soft: 0 1px 3px rgba(0,0,0,.2), 0 8px 24px rgba(0,0,0,.28),
+      inset 2px 2px .5px -2px rgba(255,255,255,.08), inset -2px -2px .5px -2px rgba(255,255,255,.42),
+      inset 1px 1px 1px -.5px rgba(255,255,255,.3), inset -1px -1px 1px -.5px rgba(255,255,255,.3),
+      inset 0 0 8px 8px rgba(255,255,255,.04), 0 0 12px rgba(0,0,0,.2);
+  }
+  :root[data-theme="light"] {
+    --bg: #FAFAF9; --ink: #0E0F11; --muted: #5F6368;
+    --line: rgba(14, 15, 17, 0.10);
+    --tint: rgba(255, 255, 255, 0.62); --tint-strong: rgba(255, 255, 255, 0.78);
+    --surface: rgba(255, 255, 255, 0.74); --surface-2: rgba(255, 255, 255, 0.6);
+    --hero-ink: #0E0F11; --hero-muted: #5F6368;
+    --link: #0369A1; --focus: #0369A1;
+    --img-dim: none;
+    --lg-rim: 0 0 6px rgba(0,0,0,.03), 0 2px 6px rgba(0,0,0,.08),
+      inset 3px 3px .5px -3px rgba(0,0,0,.9), inset -3px -3px .5px -3px rgba(0,0,0,.85),
+      inset 1px 1px 1px -.5px rgba(0,0,0,.6), inset -1px -1px 1px -.5px rgba(0,0,0,.6),
+      inset 0 0 6px 6px rgba(0,0,0,.12), inset 0 0 2px 2px rgba(0,0,0,.06),
+      0 0 12px rgba(255,255,255,.15);
+    --lg-rim-soft: 0 1px 3px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.06),
+      inset 2px 2px .5px -2px rgba(0,0,0,.55), inset -2px -2px .5px -2px rgba(0,0,0,.5),
+      inset 1px 1px 1px -.5px rgba(0,0,0,.3), inset -1px -1px 1px -.5px rgba(0,0,0,.3),
+      inset 0 0 8px 8px rgba(0,0,0,.05), 0 0 12px rgba(255,255,255,.12);
+  }
+  html { background: var(--bg); scroll-behavior: smooth; }
+  body { background: transparent; color: var(--ink); font-family: var(--f-body); line-height: 1.6; margin: 0; }
+  /* живий шар під усією сторінкою — те, що заломлює скло */
+  #bg { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
+  #bg canvas { width: 100%; height: 100%; display: block; opacity: .85; }
+  .wrap { max-width: 1020px; margin: 0 auto; padding: 0 1.4rem; position: relative; }
+  section { padding: 5.5rem 0 0; scroll-margin-top: 1.5rem; }
+
+  .eyebrow {
+    font-family: var(--f-mono); font-size: 0.75rem; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 0.6rem;
+  }
+  .eyebrow::before { content: ""; width: 1.6rem; height: 2px; background: var(--accent); }
+  h1 {
+    font-size: clamp(2.4rem, 6.5vw, 4.3rem); font-weight: 750; letter-spacing: -0.03em;
+    line-height: 1.04; margin: 1.1rem 0 1.2rem; text-wrap: balance; color: var(--hero-ink);
+  }
+  h2 {
+    font-size: clamp(1.6rem, 3.4vw, 2.3rem); font-weight: 700; letter-spacing: -0.02em;
+    line-height: 1.12; margin: 1rem 0 1.2rem; text-wrap: balance;
+  }
+  .lede { font-size: 1.12rem; color: var(--muted); max-width: 58ch; margin: 0; }
+
+  /* ===== Liquid glass: спільний рецепт ===== */
+  /* Кнопка: два шари (обідок + скло), як в оригінальному компоненті */
+  .lbtn {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    gap: 0.5rem; white-space: nowrap; cursor: pointer; border: 0; background: transparent;
+    color: var(--ink); text-decoration: none; font: 600 0.97rem var(--f-body);
+    height: 3.4rem; padding: 0 2.3rem; border-radius: 999px; isolation: isolate;
+    transition: transform 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    min-height: 44px; box-sizing: border-box;
+  }
+  .lbtn:hover { transform: scale(1.05); }
+  .lbtn:active { transform: scale(0.97); }
+  .lbtn:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
+  .lbtn .rim {
+    position: absolute; inset: 0; z-index: 0; border-radius: inherit;
+    box-shadow: var(--lg-rim); pointer-events: none;
+  }
+  .lbtn .glass {
+    position: absolute; inset: 0; z-index: -1; border-radius: inherit; overflow: hidden;
+    isolation: isolate; pointer-events: none;
+    -webkit-backdrop-filter: url(#liquid-glass); backdrop-filter: url(#liquid-glass);
+  }
+  .lbtn span:not(.rim):not(.glass) { position: relative; z-index: 10; }
+  .hero-panel .lbtn, .band .lbtn { color: var(--hero-ink); }
+
+  /* Блок: ті самі два шари через псевдоелементи (нуль зайвої розмітки) */
+  .glass {
+    position: relative; isolation: isolate; background: transparent;
+    border: 0; border-radius: 16px;
+  }
+  .glass::before {
+    content: ""; position: absolute; inset: 0; z-index: -2; border-radius: inherit;
+    background: var(--tint); overflow: hidden;
+    -webkit-backdrop-filter: url(#liquid-panel) saturate(1.4);
+    backdrop-filter: url(#liquid-panel) saturate(1.4);
+  }
+  .glass::after {
+    content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit;
+    box-shadow: var(--lg-rim-soft); pointer-events: none;
+  }
+  @supports not (backdrop-filter: url(#liquid-panel)) {
+    .glass::before { -webkit-backdrop-filter: blur(14px) saturate(1.4); backdrop-filter: blur(14px) saturate(1.4); }
+    .lbtn .glass { -webkit-backdrop-filter: blur(6px) saturate(1.35); backdrop-filter: blur(6px) saturate(1.35); }
+  }
+
+  .skip-link { position: fixed; left: 1rem; top: 1rem; z-index: 100; transform: translateY(-200%); padding: .7rem 1rem; background: var(--ink); color: var(--bg); border-radius: .4rem; }
+  .skip-link:focus { transform: none; }
+
+  /* header */
+  header.top {
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+    padding: 1.3rem 0; flex-wrap: wrap;
+  }
+  .brand { font-weight: 700; letter-spacing: -0.01em; }
+  .brand i { color: var(--link); font-style: normal; }
+  nav.hnav { display: flex; gap: 1.1rem; align-items: center; flex-wrap: wrap; }
+  nav.hnav a:not(.lbtn) { color: var(--muted); text-decoration: none; font-size: 0.92rem; }
+  nav.hnav a:not(.lbtn):hover { color: var(--ink); }
+  .hnav .lbtn { height: 2.9rem; padding: 0 1.5rem; font-size: 0.9rem; }
+  .hnav .lbtn.icon { padding: 0 1.15rem; }
+  .lbtn .ico { display: grid; place-items: center; width: 1.05rem; height: 1.05rem; }
+  .lbtn .ico svg { width: 100%; height: 100%; display: block; }
+
+  /* ===== hero ===== */
+  .hero-panel {
+    position: relative; background: var(--surface); color: var(--hero-ink);
+    border-radius: 22px; padding: clamp(2.4rem, 6vw, 4.8rem);
+    overflow: hidden; margin-top: 0.6rem; isolation: isolate;
+    box-shadow: var(--lg-rim-soft);
+    -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+  }
+  .hero-panel .eyebrow { color: var(--hero-muted); }
+  .hero-panel .lede { color: var(--hero-muted); }
+  #net { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 0; }
+  .hero-inner { position: relative; z-index: 1; }
+  .cta-row { display: flex; gap: 1rem; margin: 2.2rem 0 0; flex-wrap: wrap; }
+  .statbar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.9rem; margin-top: 3.2rem; }
+  .statbar .glass { padding: 1.25rem 1.4rem; border-radius: 14px; }
+  .statbar b {
+    display: block; font-size: 1.55rem; font-weight: 750; letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums; color: var(--hero-ink);
+  }
+  .statbar b i { color: var(--link); font-style: normal; }
+  .statbar span { font-size: 0.82rem; color: var(--hero-muted); }
+  .statbar .glass::before { background: var(--surface-2); }
+  @media (max-width: 720px) { .statbar { grid-template-columns: 1fr 1fr; } }
+  .agentline { margin: 1.4rem 0 0; font-size: 0.85rem; color: var(--hero-muted); }
+  .agentline a { color: var(--link); text-decoration: none; border-bottom: 1px solid var(--link); font-size: 0.82rem; overflow-wrap: anywhere; }
+  .runs { display: flex; gap: 0.6rem 2rem; flex-wrap: wrap; align-items: baseline; margin-top: 1.8rem; }
+  .runs .cap { font-family: var(--f-mono); font-size: 0.75rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+  .runs b { font-weight: 650; font-size: 0.95rem; white-space: nowrap; color: var(--ink); }
+
+  /* problem / solution */
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 1.4rem; align-items: stretch; }
+  @media (max-width: 780px) { .split { grid-template-columns: 1fr; } }
+  .split > .glass { padding: 2rem 2.1rem; }
+  ul.fail, ul.fix { list-style: none; margin: 1.4rem 0 0; padding: 0; display: grid; gap: 0.9rem; }
+  ul.fail li, ul.fix li { padding-left: 1.6rem; position: relative; }
+  ul.fail li { color: var(--muted); }
+  ul.fail li::before { content: "×"; position: absolute; left: 0; top: 0; color: var(--muted); font-weight: 700; }
+  ul.fix li::before { content: "→"; position: absolute; left: 0; top: 0; color: var(--accent); font-weight: 700; }
+
+  /* graph panel */
+  .panel { padding: 1.4rem; margin: 2.4rem 0 0; }
+  .panel img { display: block; width: 100%; height: auto; border-radius: 10px; filter: var(--img-dim); }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; margin-top: 1.1rem; font-family: var(--f-mono); font-size: 0.75rem; color: var(--muted); }
+  .legend i { display: inline-block; width: 0.6em; height: 0.6em; border-radius: 50%; margin-right: 0.45em; }
+
+  /* steps */
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.2rem; margin-top: 2.4rem; }
+  @media (max-width: 900px) { .steps { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 560px) { .steps { grid-template-columns: 1fr; } }
+  .step { padding: 1.4rem; border-radius: 14px; transition: transform 260ms ease; }
+  .step:hover { transform: translateY(-5px); }
+  .step .num { font-family: var(--f-mono); font-size: 0.8rem; color: var(--link); font-weight: 700; }
+  .step h3 { font-size: 1.02rem; font-weight: 700; margin: 0.55rem 0 0.4rem; letter-spacing: -0.01em; }
+  .step p { margin: 0; font-size: 0.88rem; color: var(--muted); }
+
+  /* decisions grid */
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.2rem; margin-top: 2.4rem; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 620px) { .grid { grid-template-columns: 1fr; } }
+  .cell { padding: 1.5rem 1.6rem; transition: transform 260ms ease; }
+  .cell:hover { transform: translateY(-5px); }
+  .cell h3 { font-size: 1rem; font-weight: 700; margin: 0 0 0.4rem; letter-spacing: -0.01em; }
+  .cell h3::before { content: "— "; color: var(--accent); }
+  .cell p { margin: 0; font-size: 0.9rem; color: var(--muted); }
+  .cell p b { color: var(--ink); font-weight: 600; }
+
+  /* table */
+  /* Скло НЕ скролиться: скрол живе у внутрішньому .tscroll. Якщо зробити
+     скрол-контейнером саму панель, її абсолютні псевдошари (фон+обідок)
+     їдуть разом із вмістом і таблиця вилазить «голою» (мобільний баг 30.07). */
+  .tablewrap { padding: 1.5rem 1.8rem; margin-top: 2.4rem; }
+  .tscroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 580px; }
+  th { text-align: left; font-family: var(--f-mono); font-size: 0.74rem; letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted); font-weight: 500; padding: 0.4rem 1rem 0.8rem 0; }
+  td { padding: 0.95rem 1rem 0.95rem 0; font-size: 0.9rem; vertical-align: top; border-top: 1px solid var(--line); }
+  td:first-child { color: var(--muted); width: 44%; }
+  td:last-child b { font-weight: 650; }
+
+  /* metrics band */
+  .band {
+    background: var(--surface); color: var(--hero-ink); border-radius: 18px;
+    padding: 3rem 2.4rem; margin-top: 5.5rem;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem;
+    position: relative; isolation: isolate; box-shadow: var(--lg-rim-soft);
+    -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+  }
+  @media (max-width: 720px) { .band { grid-template-columns: 1fr; } }
+  .band b { display: block; font-size: 2.3rem; font-weight: 750; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+  .band b i { color: var(--link); font-style: normal; }
+  .band span { font-size: 0.9rem; opacity: 0.72; }
+
+  /* FAQ */
+  .faq { margin-top: 2rem; padding: 0.4rem 1.8rem; }
+  details + details { border-top: 1px solid var(--line); }
+  summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1.25rem 0.2rem; font-weight: 650; font-size: 1.02rem; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; color: var(--accent); font-weight: 700; font-size: 1.3rem; flex-shrink: 0; transition: transform 200ms ease; }
+  details[open] summary::after { transform: rotate(45deg); }
+  details p { margin: 0 0 1.3rem; padding: 0 0.2rem; color: var(--muted); font-size: 0.94rem; max-width: 70ch; }
+  summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+
+  /* final CTA */
+  .final { text-align: center; padding: 5.5rem 0 1rem; }
+  .final h2 { font-size: clamp(1.9rem, 4.5vw, 3rem); }
+  /* Поле команди: повний текст без обрізки + кнопка копіювання */
+  .clone {
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+    border-radius: 18px; padding: 0.9rem 0.9rem 0.9rem 1.4rem;
+    max-width: 720px; margin: 1.8rem auto; text-align: left;
+  }
+  .clone code {
+    font-family: var(--f-mono); font-size: 0.84rem; line-height: 1.7;
+    flex: 1 1 260px; min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--ink);
+  }
+  /* Іконка копіювання: без тексту, стан — тільки зміна самої іконки */
+  .copyico {
+    flex: 0 0 auto; display: grid; place-items: center;
+    width: 44px; height: 44px; border-radius: 12px; cursor: pointer;
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    transition: color 200ms ease, border-color 200ms ease;
+  }
+  .copyico:hover { color: var(--ink); border-color: var(--ink); }
+  .copyico:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+  .copyico svg { width: 1.15rem; height: 1.15rem; display: block; }
+  .copyico.done { color: var(--accent); border-color: var(--accent); }
+  .final .lbtn { margin-top: 0.4rem; }
+  .proof {
+    font-family: var(--f-mono); font-size: 0.78rem; color: var(--muted);
+    max-width: 62ch; margin: 0.4rem auto 1.4rem; line-height: 1.6;
+  }
+  .proof::before { content: "✓ "; color: var(--accent); font-weight: 700; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  footer { margin-top: 5rem; padding: 1.6rem 0 2.2rem; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); }
+  footer a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--accent); }
+
+  /* ===== reveal (progressive enhancement: без JS/анімації контент читабельний) ===== */
+  .js-anim .rev { opacity: .4; transform: translateY(20px); transition: opacity 620ms cubic-bezier(.22,.7,.3,1), transform 620ms cubic-bezier(.22,.7,.3,1); transition-delay: var(--d, 0ms); }
+  .js-anim .rev.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .js-anim .rev { opacity: 1; transform: none; transition: none; }
+    .lbtn, .step, .cell, summary::after { transition: none; }
+    .lbtn:hover, .step:hover, .cell:hover { transform: none; }
+  }
+
+  /* ===== мобільний (вузькі екрани) ===== */
+  h1, h2 { overflow-wrap: break-word; hyphens: auto; }
+  @media (max-width: 640px) {
+    .wrap { padding: 0 1rem; }
+    h1 { font-size: clamp(1.8rem, 9vw, 2.6rem); }
+    h2 { font-size: clamp(1.4rem, 6.5vw, 1.9rem); }
+    .hero-panel { padding: 1.6rem 1.2rem; border-radius: 18px; }
+    .lede { font-size: 1rem; }
+    .cta-row { flex-direction: column; }
+    .cta-row .lbtn { width: 100%; padding: 0 1.2rem; }
+    .lbtn { font-size: 0.92rem; }
+    .hnav { gap: 0.7rem; }
+    .hnav .lbtn { padding: 0 1.1rem; }
+    .statbar { gap: 0.7rem; }
+    .statbar .glass { padding: 1rem 1.1rem; }
+    .statbar b { font-size: 1.25rem; }
+    .split > .glass { padding: 1.5rem 1.3rem; }
+    .cell { padding: 1.25rem 1.2rem; }
+    .band { padding: 2rem 1.4rem; gap: 1.4rem; }
+    .band b { font-size: 1.9rem; }
+    .tablewrap { padding: 1.1rem 1.2rem; }
+    .faq { padding: 0.2rem 1.1rem; }
+    .clone { border-radius: 14px; padding: 0.8rem; gap: 0.7rem; }
+    .clone code { font-size: 0.78rem; }
+    .final { padding-top: 4rem; }
+    section { padding-top: 3.8rem; }
+  }
+</style>
+
+<!-- Фільтри liquid glass. #liquid-glass — 1:1 з компонента (кнопки).
+     #liquid-panel — мʼякший варіант для великих поверхонь. -->
+<svg style="position:absolute;width:0;height:0" aria-hidden="true">
+  <defs>
+    <filter id="liquid-glass" x="0%" y="0%" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.05 0.05" numOctaves="1" seed="1" result="turbulence"/>
+      <feGaussianBlur in="turbulence" stdDeviation="2" result="blurredNoise"/>
+      <feDisplacementMap in="SourceGraphic" in2="blurredNoise" scale="70" xChannelSelector="R" yChannelSelector="B" result="displaced"/>
+      <feGaussianBlur in="displaced" stdDeviation="4" result="finalBlur"/>
+      <feComposite in="finalBlur" in2="finalBlur" operator="over"/>
+    </filter>
+    <filter id="liquid-panel" x="0%" y="0%" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.008 0.008" numOctaves="2" seed="4" result="t"/>
+      <feGaussianBlur in="t" stdDeviation="1.5" result="tb"/>
+      <feDisplacementMap in="SourceGraphic" in2="tb" scale="18" xChannelSelector="R" yChannelSelector="B" result="d"/>
+      <feGaussianBlur in="d" stdDeviation="7" result="fb"/>
+      <feComposite in="fb" in2="fb" operator="over"/>
+    </filter>
+  </defs>
+</svg>
+
+<div id="bg" aria-hidden="true"><canvas id="bgnet"></canvas></div>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">Memory <i>Spine</i></div>
+    <nav class="hnav" aria-label="Sections">
+      <a href="#why" data-i18n="nav1">Why</a>
+      <a href="#cycle" data-i18n="nav2">How it works</a>
+      <a href="#faq">FAQ</a>
+      <button class="lbtn icon" id="themebtn" type="button" aria-label="Light / dark theme" aria-pressed="false"><span class="rim"></span><span class="glass"></span><span class="ico" aria-hidden="true"></span></button>
+      <button class="lbtn icon" id="langbtn" type="button" aria-label="Мова / Language"><span class="rim"></span><span class="glass"></span><span>UA</span></button>
+      <a class="lbtn" href="https://github.com/AlexBridgesman/memory-spine"><span class="rim"></span><span class="glass"></span><span data-i18n="nav_gh">GitHub ↗</span></a>
+    </nav>
+  </header>
+
+  <main id="main">
+  <div class="hero-panel">
+    <canvas id="net" aria-hidden="true"></canvas>
+    <div class="hero-inner">
+      <div class="eyebrow rev" data-i18n="hero_eye">Local-first memory for AI agents</div>
+      <h1 class="rev" style="--d:80ms" data-i18n="hero_h1">Shared memory. Plain files. No hosted service.</h1>
+      <p class="lede rev" style="--d:160ms" data-i18n="hero_lede">CLI agents can share one local Markdown vault and one validated write path. Claude Code supports automatic session hooks; other agents load a bounded packet explicitly at session start. The process-ancestry gate is an access guardrail, not a filesystem sandbox.</p>
+      <div class="cta-row rev" style="--d:240ms">
+        <a class="lbtn" href="https://github.com/AlexBridgesman/memory-spine#safe-install"><span class="rim"></span><span class="glass"></span><span data-i18n="cta1">Inspect &amp; install</span></a>
+        <a class="lbtn" href="/technical"><span class="rim"></span><span class="glass"></span><span data-i18n="cta2">Technical reference</span></a>
+      </div>
+      <p class="agentline rev" style="--d:300ms"><span data-i18n="agent_line">Using an AI agent? Read the machine-readable guide:</span> <a href="/agents.md" class="mono">memory.bridges.community/agents.md</a></p>
+      <div class="statbar rev" style="--d:320ms">
+        <div class="glass"><b>2 OS</b><span data-i18n="s1s">macOS + Linux CI matrix</span></div>
+        <div class="glass"><b>18/18</b><span data-i18n="s2s">isolated selftest contract</span></div>
+        <div class="glass"><b>12/12</b><span data-i18n="s3s">public synthetic recall cases</span></div>
+        <div class="glass"><b>0</b><span data-i18n="s4s">required databases · memory servers · telemetry</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="runs rev">
+    <span class="cap" data-i18n="runs_cap">Works with</span>
+    <b>Claude Code</b><b>Codex</b><b>Hermes</b><b>Cursor</b><b>Aider</b><b data-i18n="runs_any">any shell-capable agent</b>
+  </div>
+
+  <section id="why">
+    <div class="split">
+      <div class="glass rev">
+        <div class="eyebrow" data-i18n="p_eye">The problem</div>
+        <h2 data-i18n="p_h">Why agent memory usually fails</h2>
+        <ul class="fail">
+          <li data-i18n="p1">Many tools keep separate memory silos — ChatGPT memory, CLAUDE.md, Cursor rules — with no shared local canon.</li>
+          <li data-i18n="p2">Pull-model dependence: an agent has to remember to query memory before it can use it.</li>
+          <li data-i18n="p3">Context compaction can drop session-only knowledge that was never checkpointed.</li>
+          <li data-i18n="p4">A plain local vault remains readable to processes with equivalent filesystem permissions.</li>
+        </ul>
+      </div>
+      <div class="glass rev" style="--d:140ms">
+        <div class="eyebrow" data-i18n="f_eye">The fix</div>
+        <h2 data-i18n="f_h">Structure built around one canon</h2>
+        <ul class="fix">
+          <li data-i18n="f1"><b>One shared vault for integrated agents</b> — runtime-specific memories can remain session caches.</li>
+          <li data-i18n="f2"><b>Explicit integration</b> — Claude Code can use a session hook; other agents run <code>spine-packet</code> at session start.</li>
+          <li data-i18n="f3"><b>Checkpoint discipline</b> — record at milestones, pins for env-facts, post-compaction recovery.</li>
+          <li data-i18n="f4"><b>Spine-mediated access guardrail</b> keyed on process ancestry, with an owner-managed allowlist and audit log.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="graph">
+    <div class="rev">
+      <div class="eyebrow" data-i18n="g_eye">A live system, not a concept</div>
+      <h2 data-i18n="g_h">This is what agent memory looks like</h2>
+      <p class="lede" data-i18n="g_p">The vault opens in Obsidian as a graph: every dot is one Markdown record, every cluster a project scope around its hub, every edge a wikilink. Shown as an example graph; no private vault records are included in the repository.</p>
+    </div>
+    <figure class="panel glass rev" style="--d:120ms; margin-bottom:0">
+      <img src="/assets/memory-graph.jpg" width="1000" height="947" loading="lazy" decoding="async" alt="An anonymized Obsidian graph showing linked memory records">
+      <figcaption class="legend">
+        <span><i style="background:#63BE5F"></i><span data-i18n="l1">facts</span></span>
+        <span><i style="background:#C8524E"></i><span data-i18n="l2">decisions</span></span>
+        <span><i style="background:#E08434"></i><span data-i18n="l3">threads</span></span>
+        <span><i style="background:#5B9BD5"></i><span data-i18n="l4">entities</span></span>
+        <span><i style="background:#B9B9B9"></i><span data-i18n="l5">artifacts</span></span>
+      </figcaption>
+    </figure>
+  </section>
+
+  <section id="cycle">
+    <div class="rev">
+      <div class="eyebrow" data-i18n="c_eye">The process</div>
+      <h2 data-i18n="c_h">The memory cycle</h2>
+    </div>
+    <div class="steps">
+      <div class="step glass rev">
+        <div class="num">01</div>
+        <h3 data-i18n="st1h">Write at checkpoints</h3>
+        <p data-i18n="st1p">Agents record decisions and facts the moment they happen — through spine-new only: validation, secret scan, dedup gate.</p>
+      </div>
+      <div class="step glass rev" style="--d:100ms">
+        <div class="num">02</div>
+        <h3 data-i18n="st2h">One append-oriented canon</h3>
+        <p data-i18n="st2p">One record = one Markdown file in ~/AgentMemory. The protocol supersedes rather than edits records; spine-sync can commit on an owner-configured schedule.</p>
+      </div>
+      <div class="step glass rev" style="--d:200ms">
+        <div class="num">03</div>
+        <h3 data-i18n="st3h">Distill honestly</h3>
+        <p data-i18n="st3p">Each scope compiles into a ≤14 KB packet: pins first, then decisions, facts, blockers. Every truncation carries an honest counter.</p>
+      </div>
+      <div class="step glass rev" style="--d:300ms">
+        <div class="num">04</div>
+        <h3 data-i18n="st4h">Integrate per agent</h3>
+        <p data-i18n="st4p">Claude Code can receive the packet through a hook. Other agents load it explicitly; no universal auto-injection is claimed.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="design">
+    <div class="rev">
+      <div class="eyebrow" data-i18n="d_eye">Constraints made explicit</div>
+      <h2 data-i18n="d_h">Design decisions encoded in tools and tests</h2>
+    </div>
+    <div class="grid">
+      <div class="cell glass rev">
+        <h3 data-i18n="c1h">Files with local git history</h3>
+        <p data-i18n="c1p">Local history and audit come from git; backups work only after you configure and verify them. <b>The protocol supersedes records rather than silently erasing them.</b></p>
+      </div>
+      <div class="cell glass rev" style="--d:80ms">
+        <h3 data-i18n="c2h">Secret references, not values</h3>
+        <p data-i18n="c2p">Memory policy stores only "name + where it lives". A lightweight scanner checks each record; gitleaks adds pre-commit and CI defense in depth.</p>
+      </div>
+      <div class="cell glass rev" style="--d:160ms">
+        <h3 data-i18n="c3h">A lifecycle for knowledge</h3>
+        <p data-i18n="c3p">Inbox for topics with no home, owner triage, a candidate-promotion workflow, and pins for environment truths.</p>
+      </div>
+      <div class="cell glass rev">
+        <h3 data-i18n="c4h">Access gate from a real incident</h3>
+        <p data-i18n="c4p">Spine-mediated access now checks identified callers against a process-ancestry allowlist. The allowlist is owner-managed by policy; filesystem permissions remain the enforcement boundary.</p>
+      </div>
+      <div class="cell glass rev" style="--d:80ms">
+        <h3 data-i18n="c5h">Injection-aware framing</h3>
+        <p data-i18n="c5p">Packets are framed as data, not instructions. Untrusted records are excluded from generated packets.</p>
+      </div>
+      <div class="cell glass rev" style="--d:160ms">
+        <h3 data-i18n="c6h">Operations toolkit</h3>
+        <p data-i18n="c6p">Sync, backup, health and digest tools; a dead-letter queue; an 18-test selftest; starvation alarms; atomic writes.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="vs">
+    <div class="rev">
+      <div class="eyebrow" data-i18n="v_eye">Honest comparison</div>
+      <h2 data-i18n="v_h">Against the usual approaches</h2>
+    </div>
+    <div class="tablewrap glass rev">
+      <div class="tscroll">
+      <table>
+        <caption class="sr-only" data-i18n="t_cap">Comparison of common memory approaches with Memory Spine</caption>
+        <thead><tr><th data-i18n="t_l">Instead of</th><th>Memory Spine</th></tr></thead>
+        <tbody>
+          <tr><td data-i18n="r1l">Per-tool memory silos with opaque retention</td><td data-i18n="r1r"><b>One canon for each integrated agent;</b> runtime-specific memories can remain session caches.</td></tr>
+          <tr><td data-i18n="r2l">A vector DB or memory service holding your data</td><td data-i18n="r2r"><b>Files + git, local.</b> A public 12-case synthetic regression set documents current keyword-recall behavior; it is not an external benchmark.</td></tr>
+          <tr><td data-i18n="r3l">Hoping the agent remembers to ask</td><td data-i18n="r3r"><b>Automatic for configured Claude hooks;</b> explicit session bootstrap for other agents.</td></tr>
+          <tr><td data-i18n="r4l">Notes dumped into the context window</td><td data-i18n="r4r"><b>Typed, size-bounded distillation</b> with confidence levels and honest counters.</td></tr>
+          <tr><td data-i18n="r5l">Trusting every process using the tools</td><td data-i18n="r5r"><b>Process-ancestry guardrail for Spine commands</b> plus an audit log; OS permissions still control direct file access.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    </div>
+
+    <div class="band rev">
+      <div><b>18<i>/18</i></b><span data-i18n="b1">isolated write-mechanics selftests</span></div>
+      <div><b>12<i>/12</i></b><span data-i18n="b2">public synthetic recall regression cases</span></div>
+      <div><b>2<i> OS</i></b><span data-i18n="b3">macOS and Linux in the CI matrix</span></div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="rev">
+      <div class="eyebrow">FAQ</div>
+      <h2 data-i18n="faq_h">Questions that come up first</h2>
+    </div>
+    <div class="faq glass rev">
+      <details>
+        <summary data-i18n="q1">Is this a database or a framework?</summary>
+        <p data-i18n="a1">Neither. It is plain Markdown files in a local git repo plus bash/Python CLI tools. A shell-capable agent can participate once explicitly integrated; no SDK, memory server, or product account is required.</p>
+      </details>
+      <details>
+        <summary data-i18n="q2">What stops a random app from reading my memory?</summary>
+        <p data-i18n="a2">Spine tools check identified callers against a process-ancestry allowlist and log their decisions. This guardrail covers Spine-mediated access, not direct filesystem reads. The vault remains a plain folder, so filesystem permissions and keeping secret values out of memory remain the underlying boundaries.</p>
+      </details>
+      <details>
+        <summary data-i18n="q3">Why not embeddings and vector search?</summary>
+        <p data-i18n="a3">The repository includes a 12-case synthetic top-1 regression set for keyword search with morphology and synonyms. It currently passes 12/12 locally. This is a transparent regression check, not an independent comparison with vector search.</p>
+      </details>
+      <details>
+        <summary data-i18n="q4">Does it work outside macOS?</summary>
+        <p data-i18n="a4">The installer and core selftest run in a macOS + Linux CI matrix. macOS includes launchd templates and optional Keychain support; Linux scheduling still requires an explicit cron or systemd setup.</p>
+      </details>
+      <details>
+        <summary data-i18n="q5">How does it survive context compaction?</summary>
+        <p data-i18n="a5">By design: agents write at checkpoints, environment facts can be pinned, and packets include a per-agent delta. Claude Code hooks can re-inject after compaction; other runtimes must call the packet command explicitly.</p>
+      </details>
+      <details>
+        <summary data-i18n="q6">What about backups?</summary>
+        <p data-i18n="a6">Backup behavior is opt-in. After the owner installs a scheduler, spine-sync can update a same-machine bare mirror; a separately configured backup job can copy to an external volume, and spine-health can report staleness. None of these jobs runs merely because the core installer completed.</p>
+      </details>
+    </div>
+  </section>
+
+  <section class="final">
+    <h2 class="rev" data-i18n="fin_h">Give your agents a memory that survives the night</h2>
+    <div class="clone glass rev" style="--d:100ms">
+      <code id="clonecmd">https://github.com/AlexBridgesman/memory-spine</code>
+      <button class="copyico" id="copybtn" type="button" aria-label="Copy URL" title="Copy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5.5 15H5a1.8 1.8 0 0 1-1.8-1.8V5A1.8 1.8 0 0 1 5 3.2h8.2A1.8 1.8 0 0 1 15 5v.5"/>
+        </svg>
+      </button>
+    </div>
+    <p aria-live="polite" class="sr-only" id="copystatus"></p>
+    <p class="proof rev" style="--d:130ms" data-i18n="proof">Reproduce the evidence locally: the isolated installer test runs selftest 18/18, config-preservation and uninstall contracts; the public recall set reports its own top-1 result.</p>
+    <div class="rev" style="--d:160ms">
+      <a class="lbtn" href="https://github.com/AlexBridgesman/memory-spine"><span class="rim"></span><span class="glass"></span><span>git clone</span></a>
+    </div>
+  </section>
+
+  </main>
+
+  <footer>
+    <span data-i18n="foot1">Open-source by the Bridges team · MIT</span>
+    <span><a href="https://github.com/AlexBridgesman/memory-spine/blob/main/CHANGELOG.md">Changelog</a> · <a href="https://github.com/AlexBridgesman/memory-spine/issues/new?template=feedback.yml" data-i18n="fb">Leave feedback</a> · <a href="https://bridges.community">bridges.community</a></span>
+  </footer>
+</div>
+
+<script>
+const I18N = { ua: {
+  nav1: "Навіщо", nav2: "Як працює", nav_gh: "GitHub ↗",
+  hero_eye: "Local-first памʼять для AI-агентів",
+  hero_h1: "Спільна памʼять. Звичайні файли. Без хмарного сервісу.",
+  hero_lede: "CLI-агенти можуть користуватися спільним локальним Markdown-сховищем і єдиним перевіреним шляхом запису. Claude Code підтримує автоматичні хуки сесії; інші агенти явно завантажують стислий пакет на старті. Гейт за ланцюгом процесів — додатковий барʼєр, а не файловий sandbox.",
+  cta1: "Перевірити й встановити", cta2: "Технічна довідка",
+  s1s: "macOS + Linux у CI", s2s: "ізольованих selftest-перевірок",
+  s3s: "публічних синтетичних recall-кейсів", s4s: "обовʼязкових баз · memory-серверів · телеметрії",
+  runs_cap: "Працює з", runs_any: "будь-яким shell-агентом",
+  agent_line: "Працюєш через AI-агента? Дай йому машинозчитувану інструкцію:",
+  p_eye: "Проблема", p_h: "Чому памʼять агентів зазвичай не працює",
+  p1: "Багато інструментів тримають окремі силоси — ChatGPT memory, CLAUDE.md, Cursor rules — без спільного локального канону.",
+  p2: "Залежність від pull-моделі: агент має згадати звернутися до памʼяті, перш ніж нею скористатися.",
+  p3: "Компакція контексту може прибрати знання сесії, які не були записані на чекпойнті.",
+  p4: "Звичайне локальне сховище доступне процесам з еквівалентними правами файлової системи.",
+  f_eye: "Рішення", f_h: "Структура довкола одного канону",
+  f1: "<b>Одне спільне сховище для інтегрованих агентів</b> — памʼять окремих середовищ може лишатися кешем сесії.",
+  f2: "<b>Явна інтеграція</b> — Claude Code може використовувати hook; інші агенти запускають <code>spine-packet</code> на старті сесії.",
+  f3: "<b>Дисципліна чекпоінтів</b> — запис на майлстоунах, піни для env-фактів, відновлення після компакції.",
+  f4: "<b>Барʼєр для доступу через Spine</b> за ланцюгом процесів, із allowlist-ом під керуванням власника та аудит-логом.",
+  g_eye: "Жива система, не концепт", g_h: "Ось як виглядає памʼять агентів",
+  g_p: "Сховище відкривається в Obsidian як граф: кожна точка — Markdown-запис, кластер — окрема сфера, ребро — wikilink. Це приклад візуалізації; приватні записи до репозиторію не входять.",
+  l1: "факти", l2: "рішення", l3: "треди", l4: "сутності", l5: "артефакти",
+  c_eye: "Процес", c_h: "Цикл памʼяті",
+  st1h: "Запис на чекпоінтах", st1p: "Агенти фіксують рішення і факти в момент, коли вони стались — тільки через spine-new: валідація, скан секретів, анти-дубль.",
+  st2h: "Один append-oriented канон", st2p: "Один запис = один Markdown-файл у ~/AgentMemory. За протоколом записи замінюються через supersede, а spine-sync може комітити за розкладом власника.",
+  st3h: "Чесна дистиляція", st3p: "Кожен scope збирається в packet ≤14 КБ: спершу піни, далі рішення, факти, блокери. Кожна обрізка — з чесним лічильником.",
+  st4h: "Інтеграція з кожним агентом", st4p: "Claude Code може отримувати пакет через hook. Інші агенти завантажують його явно; універсальної автоінʼєкції продукт не заявляє.",
+  d_eye: "Обмеження сформульовано явно", d_h: "Рішення, закодовані в інструментах і тестах",
+  c1h: "Файли з локальною git-історією", c1p: "Git дає локальну історію й аудит; резервні копії працюють лише після налаштування та перевірки. <b>За протоколом знання замінюються новим записом, а не стираються непомітно.</b>",
+  c2h: "Посилання на секрети, не значення", c2p: "Політика памʼяті тримає лише «назва + де лежить». Легкий сканер перевіряє кожен запис; gitleaks додає захист у pre-commit і CI.",
+  c3h: "Життєвий цикл знань", c3p: "Inbox для тем без дому, тріаж власником, workflow промоції кандидатів і піни для env-істин.",
+  c4h: "Гейт із реального інциденту", c4p: "Доступ через Spine тепер звіряє ідентифікованих викликачів з allowlist-ом за ланцюгом процесів. За політикою allowlist веде власник; межею примусу лишаються права файлової системи.",
+  c5h: "Маркування недовіреного контенту", c5p: "Пакет позначено як дані, а не інструкції. Записи з рівнем untrusted не потрапляють у згенеровані пакети.",
+  c6h: "Операційний набір", c6p: "Інструменти sync/backup/health/digest; dead-letter черга; selftest із 18 перевірок; алерти голодування; атомарні записи.",
+  v_eye: "Чесне порівняння", v_h: "Проти типових підходів", t_l: "Замість", t_cap: "Порівняння типових підходів до памʼяті з Memory Spine",
+  r1l: "Окремі силоси памʼяті з непрозорим зберіганням", r1r: "<b>Один канон для кожного інтегрованого агента;</b> локальні runtime-памʼяті можуть лишатися кешами сесії.",
+  r2l: "Векторна БД чи сервіс памʼяті з твоїми даними", r2r: "<b>Локальні файли + git.</b> Публічний синтетичний набір із 12 кейсів фіксує поточну поведінку keyword-recall; це не зовнішній benchmark.",
+  r3l: "Надія, що агент сам згадає про памʼять", r3r: "<b>Автоматично для налаштованих Claude hooks;</b> явний стартовий крок для інших агентів.",
+  r4l: "Нотатки, звалені в контекстне вікно", r4r: "<b>Типізована, розмірно-обмежена дистиляція</b> з рівнями довіри і чесними лічильниками.",
+  r5l: "Довіра всім процесам, що запускають інструменти", r5r: "<b>Барʼєр за ланцюгом процесів для команд Spine</b> та аудит-лог; прямий доступ до файлів контролюють права ОС.",
+  b1: "ізольованих selftest-перевірок механіки запису", b2: "публічних синтетичних recall-кейсів", b3: "macOS і Linux у CI-матриці",
+  faq_h: "Питання, які виникають першими",
+  q1: "Це база даних чи фреймворк?", a1: "Ні те, ні інше. Це Markdown-файли в локальному git-репо та bash/Python CLI-інструменти. Shell-агент може брати участь після явної інтеграції; SDK, memory-сервер чи акаунт продукту не потрібні.",
+  q2: "Що заважає сторонньому застосунку прочитати мою памʼять?", a2: "Інструменти Spine звіряють ідентифікованих викликачів з allowlist-ом за ланцюгом процесів і логують рішення. Цей барʼєр покриває доступ через Spine, а не пряме читання файлів. Vault лишається звичайною текою, тому базовими межами є права файлової системи та відсутність значень секретів у памʼяті.",
+  q3: "Чому не embeddings і векторний пошук?", a3: "Репозиторій містить синтетичний набір із 12 top-1 кейсів для keyword-пошуку з морфологією та синонімами. Локально він дає 12/12. Це прозорий regression check, а не незалежне порівняння з vector search.",
+  q4: "Працює поза macOS?", a4: "Installer і core selftest входять до CI-матриці для macOS та Linux. macOS має шаблони launchd і опційний Keychain; на Linux розклад через cron або systemd треба налаштувати явно.",
+  q5: "Як воно переживає компакцію контексту?", a5: "Агенти пишуть на чекпоінтах, довготривалі факти можна пінувати, а пакет містить дельту для конкретного агента. Claude Code hooks можуть повторно подати пакет після compaction; інші runtime мають явно викликати команду пакета.",
+  q6: "А бекапи?", a6: "Бекапи — opt-in. Після явного налаштування розкладу spine-sync може оновлювати локальне bare-дзеркало; окремо налаштований backup-job може копіювати на зовнішній диск, а spine-health — повідомляти про застарілу копію. Сам core installer ці jobs не запускає.",
+  proof: "Докази відтворюються локально: ізольований installer-тест запускає selftest 18/18, перевіряє збереження конфігів і безпечне видалення; public recall-набір сам звітує свій top-1 результат.",
+  fin_h: "Дай своїм агентам памʼять, що переживе ніч",
+  fin_btn: "Зірка на GitHub",
+  foot1: "Open-source проєкт команди Bridges · MIT", fb: "Залишити відгук",
+}};
+/* Тема: дві — світла і темна. Кнопка перебиває системну і памʼятає вибір. */
+const SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.4v2.2M12 19.4v2.2M2.4 12h2.2M19.4 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6"/></svg>';
+const MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 14.2A8.6 8.6 0 0 1 9.8 3.5a8.6 8.6 0 1 0 10.7 10.7z"/></svg>';
+const themeBtn = document.getElementById("themebtn");
+const themeIco = themeBtn.querySelector(".ico");
+function setTheme(t, persist) {
+  document.documentElement.setAttribute("data-theme", t);
+  themeIco.innerHTML = t === "dark" ? SUN : MOON;      // іконка = куди перемкне
+  themeBtn.setAttribute("aria-pressed", String(t === "dark"));
+  themeBtn.setAttribute("aria-label", t === "dark" ? "Switch to light theme" : "Switch to dark theme");
+  if (persist) { try { localStorage.setItem("spine-theme", t); } catch (e) {} }
+}
+setTheme(localStorage.getItem("spine-theme")
+  || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"), false);
+themeBtn.addEventListener("click", () =>
+  setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark", true));
+
+const EN = {};
+const btn = document.getElementById("langbtn");
+const btnLabel = btn.querySelector("span:last-child");
+const requestedLang = new URLSearchParams(location.search).get("lang");
+const storedLang = localStorage.getItem("spine-lang");
+let lang = requestedLang === "ua" ? "ua" :
+  ((storedLang || (navigator.language || "en").slice(0, 2)) === "uk" ? "ua" : (storedLang || "en"));
+function apply(l, updateUrl) {
+  document.querySelectorAll("[data-i18n]").forEach(el => {
+    const k = el.getAttribute("data-i18n");
+    if (!(k in EN)) EN[k] = el.innerHTML;
+    el.innerHTML = l === "ua" ? (I18N.ua[k] ?? EN[k]) : EN[k];
+  });
+  document.documentElement.lang = l === "ua" ? "uk" : "en";
+  btnLabel.textContent = l === "ua" ? "EN" : "UA";
+  btn.setAttribute("aria-label", l === "ua" ? "Switch to English" : "Перемкнути українською");
+  document.title = l === "ua" ? "Memory Spine — локальна памʼять для AI-агентів" : "Memory Spine — local-first memory for AI agents";
+  const description = document.querySelector('meta[name="description"]');
+  description.content = l === "ua" ? "Спільна локальна памʼять для CLI-агентів: Markdown у git, перевірений запис і обмежені контекстні пакети." : "Local-first shared memory for CLI agents: plain Markdown in git, a validated write path, bounded context packets, and an access guardrail. No database or hosted service.";
+  const canonical = document.querySelector('link[rel="canonical"]');
+  canonical.href = l === "ua" ? "https://memory.bridges.community/?lang=ua" : "https://memory.bridges.community/";
+  lang = l;
+  try { localStorage.setItem("spine-lang", l); } catch (e) {}
+  if (updateUrl) {
+    const url = new URL(location.href);
+    if (l === "ua") url.searchParams.set("lang", "ua"); else url.searchParams.delete("lang");
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }
+}
+btn.addEventListener("click", () => apply(lang === "ua" ? "en" : "ua", true));
+if (lang === "ua") apply("ua", false);
+
+/* Копіювання URL: іконка → галочка. Ніякого тексту, ніяких інструкцій користувачу. */
+const copyBtn = document.getElementById("copybtn");
+const copyStatus = document.getElementById("copystatus");
+const ICON_COPY = copyBtn.innerHTML;
+const ICON_DONE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11"/></svg>';
+let copyTimer = null;
+function copyUrl() {
+  const text = document.getElementById("clonecmd").textContent.trim();
+  const flash = () => {
+    copyBtn.innerHTML = ICON_DONE;
+    copyBtn.classList.add("done");
+    copyStatus.textContent = lang === "ua" ? "Скопійовано" : "Copied";
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => {
+      copyBtn.innerHTML = ICON_COPY;
+      copyBtn.classList.remove("done");
+    }, 1800);
+  };
+  // Фолбек виконує копіювання сам — користувач бачить той самий результат.
+  const legacy = () => {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    ta.remove(); flash();
+  };
+  if (navigator.clipboard && isSecureContext) {
+    navigator.clipboard.writeText(text).then(flash, legacy);
+  } else {
+    legacy();
+  }
+}
+copyBtn.addEventListener("click", copyUrl);
+
+/* reveal */
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const canAnimate = !reduced && "IntersectionObserver" in window;
+function reveal(el) { el.classList.add("in"); el.style.opacity = "1"; el.style.transform = "none"; }
+if (canAnimate) {
+  document.documentElement.classList.add("js-anim");
+  const io = new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) { reveal(e.target); io.unobserve(e.target); }
+  }), { threshold: 0.12, rootMargin: "0px 0px -5% 0px" });
+  document.querySelectorAll(".rev").forEach(el => io.observe(el));
+  setTimeout(() => { if (!document.querySelector(".rev.in")) document.querySelectorAll(".rev").forEach(reveal); }, 1200);
+}
+
+/* констеляція (бренд-мотив). Два полотна: фон сторінки (скло його заломлює) і hero. */
+function constellation(canvas, opts) {
+  const host = opts.host, ctx = canvas.getContext("2d");
+  const DPR = Math.min(devicePixelRatio || 1, 2);
+  let W = 0, H = 0, pts = [], raf = null;
+  function size() {
+    W = host.clientWidth || innerWidth; H = host.clientHeight || innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const n = Math.min(opts.max, Math.round(W * H / opts.density));
+    pts = Array.from({ length: n }, () => ({
+      x: Math.random() * W, y: Math.random() * H,
+      vx: (Math.random() - 0.5) * opts.speed, vy: (Math.random() - 0.5) * opts.speed,
+      r: Math.random() * 1.5 + 0.6
+    }));
+  }
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    for (const p of pts) {
+      p.x += p.vx; p.y += p.vy;
+      if (p.x < 0 || p.x > W) p.vx *= -1;
+      if (p.y < 0 || p.y > H) p.vy *= -1;
+    }
+    ctx.lineWidth = 0.5;
+    const R = opts.link;
+    for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+      const a = pts[i], b = pts[j], dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy;
+      if (d2 < R * R) {
+        ctx.strokeStyle = `rgba(56,189,248,${opts.lineAlpha * (1 - Math.sqrt(d2) / R)})`;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+    }
+    ctx.fillStyle = `rgba(56,189,248,${opts.dotAlpha})`;
+    for (const p of pts) { ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill(); }
+    if (!reduced) raf = requestAnimationFrame(draw);
+  }
+  size(); draw();
+  addEventListener("resize", () => { size(); if (reduced) draw(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) cancelAnimationFrame(raf); else if (!reduced) draw();
+  });
+}
+constellation(document.getElementById("bgnet"), { host: document.getElementById("bg"), max: 110, density: 14000, speed: .16, link: 150, lineAlpha: .13, dotAlpha: .34 });
+constellation(document.getElementById("net"), { host: document.querySelector(".hero-panel"), max: 80, density: 16000, speed: .22, link: 130, lineAlpha: .16, dotAlpha: .5 });
+</script>
+
+</body>
+</html>

@@ -3,7 +3,10 @@
 # + a once-per-session reminder about inbox triage.
 # Looks ONLY at project folders (no _index/INDEX/logs). Never blocks the session.
 set -u
-LOGDIR="${SPINE_LOG_DIR:-$HOME/Library/Logs/AgentMemory}"
+BINDIR="$(cd "$(dirname "$0")" && pwd)"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BINDIR")}"
+. "$TOOLS/lib/spine_paths.sh"
+LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 MARKER="$LOGDIR/markers/session-$PPID"
 INBOX_MARKER="$LOGDIR/markers/inbox-nudge-$PPID"
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"

@@ -1,9 +1,8 @@
 #!/bin/bash
-# spine-selftest — weekly memory CI (v3.3): verifies the DEFENSE LAYERS by fact,
-# not by faith. Run from the weekly maintenance job or by hand. Read-only for
-# records; temp files go to a scratch dir + one INERT transient inside the vault
-# (T5: private+archived → it enters no auto channel even if it gets stuck;
-# trap cleanup + a final leftover check).
+# spine-selftest — weekly memory CI (v3.3): verifies the defense layers by fact,
+# not by faith. The default entrypoint creates a minimal scratch vault and runs
+# all write-mechanics probes there. Only T9/T10 inspect the installed vault and
+# tools, and both checks are read-only.
 # v3.3 review: negative tests require a SPECIFIC exit code (1/2), not any
 # nonzero — otherwise a broken tool (127) produced a false PASS.
 set -u
@@ -11,13 +10,14 @@ set -u
 # runners whose process chains are rightly NOT in anyone's allowlist (caught on
 # 2026-07-30: the gate denied the runner and three tests failed for the wrong
 # reason, while refusal-shaped tests had been "passing" via gate denials).
-# SPINE_NO_GATE is the sanctioned escape; the gate's own refusal path is
-# production-proven via the access log.
+# SPINE_NO_GATE is the sanctioned escape; the gate's refusal behavior is out
+# of scope for this write-mechanics test and must be tested separately.
 export SPINE_NO_GATE=1
 BIN="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
-REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$HOME/Library/AgentMemory/Remotes}"
+. "$TOOLS/lib/spine_paths.sh"
+REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$(spine_default_remote_root)}"
 BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
 PY="${SPINE_PYTHON:-$(command -v python3 || echo /usr/bin/python3)}"
 GITLEAKS="${SPINE_GITLEAKS:-$(command -v gitleaks || echo /opt/homebrew/bin/gitleaks)}"
@@ -27,6 +27,62 @@ if [ -z "$GIT" ]; then
   [ -n "$GIT" ] || for c in /opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git; do
     [ -x "$c" ] && { GIT="$c"; break; }
   done
+fi
+
+# Never exercise write probes against the installed vault. Build a tiny
+# synthetic vault from the installed dictionaries, then invoke this script once
+# in inner mode. The live vault, mirror, and canonical hook are passed only to
+# the read-only T9/T10 checks below.
+if [ "${SPINE_SELFTEST_INNER:-0}" != "1" ]; then
+  SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/spine-selftest-isolated.XXXXXX") || exit 1
+  cleanup_outer() { rm -rf "$SCRATCH"; }
+  trap cleanup_outer EXIT INT TERM HUP
+  SCRATCH_HOME="$SCRATCH/home"
+  SCRATCH_TOOLS="$SCRATCH_HOME/dev/memory-spine"
+  SCRATCH_ROOT="$SCRATCH_HOME/AgentMemory"
+  SCRATCH_LOG="$SCRATCH_HOME/.local/state/AgentMemory"
+  mkdir -p "$SCRATCH_HOME/dev" "$SCRATCH_ROOT/_index" "$SCRATCH_ROOT/config" "$SCRATCH_LOG"
+  cp -R "$TOOLS" "$SCRATCH_TOOLS"
+
+  LIVE_CFG="${SPINE_CONFIG_DIR:-}"
+  if [ -z "$LIVE_CFG" ]; then
+    for c in "$TOOLS/config" "$ROOT/config"; do
+      [ -f "$c/projects.txt" ] && { LIVE_CFG="$c"; break; }
+    done
+  fi
+  : "${LIVE_CFG:=$TOOLS/config}"
+  cp "$LIVE_CFG/projects.txt" "$SCRATCH_TOOLS/config/projects.txt"
+  cp "$LIVE_CFG/agents.txt" "$SCRATCH_TOOLS/config/agents.txt"
+  cp "$ROOT/.gitleaks.toml" "$SCRATCH_ROOT/.gitleaks.toml"
+
+  while IFS= read -r project; do
+    case "$project" in ''|'#'*) continue ;; esac
+    mkdir -p "$SCRATCH_ROOT/$project"/{decisions,facts,threads,artifacts}
+    printf '# %s\n' "$project" > "$SCRATCH_ROOT/$project/$project.md"
+  done < "$SCRATCH_TOOLS/config/projects.txt"
+
+  "$GIT" -C "$SCRATCH_ROOT" init -q -b main
+  "$GIT" -C "$SCRATCH_ROOT" config user.name "Memory Spine Selftest"
+  "$GIT" -C "$SCRATCH_ROOT" config user.email "selftest@example.invalid"
+  "$GIT" -C "$SCRATCH_ROOT" add .
+  "$GIT" -C "$SCRATCH_ROOT" commit -qm "selftest fixture"
+
+  SPINE_SELFTEST_INNER=1 \
+  HOME="$SCRATCH_HOME" \
+  SPINE_ROOT="$SCRATCH_ROOT" \
+  SPINE_TOOLS_DIR="$SCRATCH_TOOLS" \
+  SPINE_CONFIG_DIR="$SCRATCH_TOOLS/config" \
+  SPINE_LOG_DIR="$SCRATCH_LOG" \
+  SPINE_SELFTEST_LIVE_ROOT="$ROOT" \
+  SPINE_SELFTEST_LIVE_TOOLS="$TOOLS" \
+  SPINE_SELFTEST_LIVE_BARE="$BARE" \
+  SPINE_GITLEAKS="$GITLEAKS" \
+  SPINE_GIT="$GIT" \
+    "$SCRATCH_TOOLS/bin/spine-selftest"
+  RC=$?
+  cleanup_outer
+  trap - EXIT INT TERM HUP
+  exit "$RC"
 fi
 
 # Config dir resolution — must match spine-gen/spine-validate: env override,
@@ -42,6 +98,9 @@ DICT="$CFG_DIR/projects.txt"
 # First non-inbox scope from the dictionary hosts the inert transients
 FIRST_SCOPE=$(grep -v '^#' "$DICT" 2>/dev/null | grep -v '^inbox$' | grep . | head -1)
 : "${FIRST_SCOPE:=inbox}"
+AGENT_DICT="$CFG_DIR/agents.txt"
+TEST_AGENT=$(grep -v '^#' "$AGENT_DICT" 2>/dev/null | grep . | head -1)
+: "${TEST_AGENT:=user}"
 
 TMPD=$(mktemp -d "${TMPDIR:-/tmp}/spine-selftest.XXXXXX")
 VAULT_TMP="$ROOT/$FIRST_SCOPE/facts/selftest-dup-key-transient.md"
@@ -80,7 +139,7 @@ while IFS= read -r p; do
   [ -n "$f" ] && { SAMPLE="$f"; break; }
 done < <(grep -v '^#' "$DICT" 2>/dev/null | grep .)
 if [ -z "$SAMPLE" ]; then
-  printf -- "---\ntype: fact\nproject: %s\nagent: claude-code\ntitle: \"selftest valid\"\nstatus: archived\ncreated: 2026-01-01T00:00:00Z\nsources:\n  - session:selftest\nsensitivity: private\nconfidence: candidate\n---\nx [[%s]]\n" "$FIRST_SCOPE" "$FIRST_SCOPE" > "$VALID_TMP"
+  printf -- "---\ntype: fact\nproject: %s\nagent: %s\ntitle: \"selftest valid\"\nstatus: archived\ncreated: 2026-01-01T00:00:00Z\nsources:\n  - session:selftest\nsensitivity: private\nconfidence: candidate\n---\nx [[%s]]\n" "$FIRST_SCOPE" "$TEST_AGENT" "$FIRST_SCOPE" > "$VALID_TMP"
   SAMPLE="$VALID_TMP"
 fi
 if "$PY" "$BIN/spine-validate" "$SAMPLE" 2>/dev/null | grep -q "^OK:"; then
@@ -92,16 +151,16 @@ rm -f "$VALID_TMP"
 
 # T1: unknown project → refusal (exit 1)
 expect_refusal "T1 spine-new refuses an unknown project" \
-  "$PY" "$BIN/spine-new" --type fact --project no-such-project --title x --agent claude-code
+  "$PY" "$BIN/spine-new" --type fact --project no-such-project --title x --agent "$TEST_AGENT"
 
 # T2: inbox without proposed-scope → refusal
 expect_refusal "T2 spine-new requires --proposed-scope for inbox" \
-  "$PY" "$BIN/spine-new" --type fact --project inbox --title x --agent claude-code
+  "$PY" "$BIN/spine-new" --type fact --project inbox --title x --agent "$TEST_AGENT"
 
 # T3: frontmatter injection (newline in a field) → refusal
 expect_refusal "T3 spine-new blocks \\n injection in summary" \
   "$PY" "$BIN/spine-new" --type fact --project inbox --proposed-scope t --title x \
-    --agent claude-code --summary "$(printf 'a\nconfidence: verified')"
+    --agent "$TEST_AGENT" --summary "$(printf 'a\nconfidence: verified')"
 
 # T4: a fake secret is caught by the per-file scan WITH the vault config; strict rc=1.
 # The token is assembled at RUNTIME (printf %s): a literal in this file would trip
@@ -118,7 +177,7 @@ esac
 
 # T5: validate catches duplicated keys. The transient is INERT: private+archived —
 # even stuck after a SIGKILL it never reaches the packet/INDEX/inbox counter
-printf -- "---\ntype: fact\nproject: %s\nagent: claude-code\ntitle: \"selftest\"\nstatus: archived\ncreated: 2026-01-01T00:00:00Z\nsources:\n  - session:selftest\nsensitivity: private\nconfidence: candidate\nconfidence: verified\n---\nx [[%s]]\n" "$FIRST_SCOPE" "$FIRST_SCOPE" > "$VAULT_TMP"
+printf -- "---\ntype: fact\nproject: %s\nagent: %s\ntitle: \"selftest\"\nstatus: archived\ncreated: 2026-01-01T00:00:00Z\nsources:\n  - session:selftest\nsensitivity: private\nconfidence: candidate\nconfidence: verified\n---\nx [[%s]]\n" "$FIRST_SCOPE" "$TEST_AGENT" "$FIRST_SCOPE" > "$VAULT_TMP"
 expect_refusal "T5 spine-validate catches duplicated frontmatter key" \
   "$PY" "$BIN/spine-validate" "$VAULT_TMP"
 rm -f "$VAULT_TMP"
@@ -161,13 +220,15 @@ else
   fi
 fi
 
-# T9: local == bare; an ABSENT bare = FAIL (v3.3 review: an empty bare HEAD used to
-# produce a false PASS)
-if [ ! -d "$BARE" ]; then
-  bad "T9 bare mirror ABSENT: $BARE"
+# T9: installed local == bare; this check is read-only. An ABSENT bare = FAIL
+# (v3.3 review: an empty bare HEAD used to produce a false PASS).
+LIVE_ROOT="${SPINE_SELFTEST_LIVE_ROOT:-$ROOT}"
+LIVE_BARE="${SPINE_SELFTEST_LIVE_BARE:-$BARE}"
+if [ ! -d "$LIVE_BARE" ]; then
+  bad "T9 bare mirror ABSENT: $LIVE_BARE"
 else
-  LH=$("$GIT" -C "$ROOT" rev-parse HEAD 2>/dev/null)
-  BH=$("$GIT" -C "$BARE" rev-parse HEAD 2>/dev/null)
+  LH=$("$GIT" -C "$LIVE_ROOT" rev-parse HEAD 2>/dev/null)
+  BH=$("$GIT" -C "$LIVE_BARE" rev-parse HEAD 2>/dev/null)
   if [ -z "$LH" ] || [ -z "$BH" ]; then
     bad "T9 HEAD unreadable (local='$LH' bare='$BH')"
   elif [ "$LH" = "$BH" ]; then
@@ -183,8 +244,9 @@ else
   fi
 fi
 
-# T10: the hook is installed and matches the canonical copy
-if cmp -s "$TOOLS/hooks/pre-commit" "$ROOT/.git/hooks/pre-commit"; then
+# T10: the installed hook matches the installed canonical copy (read-only)
+LIVE_TOOLS="${SPINE_SELFTEST_LIVE_TOOLS:-$TOOLS}"
+if cmp -s "$LIVE_TOOLS/hooks/pre-commit" "$LIVE_ROOT/.git/hooks/pre-commit"; then
   ok "T10 pre-commit hook = canon"
 else
   bad "T10 pre-commit hook missing/diverged from canon"
@@ -202,7 +264,7 @@ if [ -z "$LEFT" ]; then ok "T11 no leftover transient files"; else bad "T11 left
 # lint on 2026-07-30). The prefix and tail never appear contiguously on disk.
 T12_TOK="ghp_"
 T12_TOK="${T12_TOK}0123456789abcdefghij0123456789abcdef"
-OUT12=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+OUT12=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent "$TEST_AGENT" \
   --title "selftest secret refusal transient" \
   --body "leaked: $T12_TOK" 2>&1)
 if [ $? -ne 0 ] && echo "$OUT12" | grep -q "SECRET VALUE"; then
@@ -217,10 +279,10 @@ fi
 T13_TITLE="selftest dedup gate transient probe"
 # the base twin is a plain record: archived/private flags are (correctly)
 # rejected at creation time, which silently voided the first version of this test
-F13=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+F13=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent "$TEST_AGENT" \
   --title "$T13_TITLE" --body "twin base. [[$FIRST_SCOPE]]" 2>/dev/null | tail -1)
 [ -f "$F13" ] || bad "T13 setup: base twin was not created"
-OUT13=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+OUT13=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent "$TEST_AGENT" \
   --title "$T13_TITLE" --body "twin attempt" 2>&1)
 if [ $? -ne 0 ] && echo "$OUT13" | grep -q "probable duplicate"; then
   ok "T13 dedup gate refuses a near-duplicate title"
@@ -232,11 +294,11 @@ find "$ROOT/$FIRST_SCOPE" -name "*selftest-dedup-gate-transient*" -delete 2>/dev
 
 # T14: a superseded record disappears from the packet (current view) while its
 # replacement stays (same review: "immutability piles up stale records")
-U14=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+U14=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent "$TEST_AGENT" \
   --title "selftest supersede old transient fact" --confidence verified \
   --body "old knowledge. [[$FIRST_SCOPE]]" 2>/dev/null | tail -1)
 UID14=$(basename "$U14" | grep -oE "[0-9A-HJKMNP-TV-Z]{26}")
-N14=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+N14=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent "$TEST_AGENT" \
   --title "selftest supersede new transient fact" --confidence verified \
   --supersedes "$UID14" --body "new knowledge. [[$FIRST_SCOPE]]" 2>/dev/null | tail -1)
 "$PY" "$BIN/spine-gen" >/dev/null 2>&1
@@ -254,10 +316,10 @@ rm -f "$U14" "$N14" 2>/dev/null
 # version wrote unscanned with just a warning); SPINE_NO_SCAN=1 is the audited
 # escape. The scanner is hidden for one call only.
 mv "$BIN/spine-secrets-lint" "$BIN/spine-secrets-lint.hidden"
-OUT15=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+OUT15=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent "$TEST_AGENT" \
   --title "selftest noscan refusal transient" --body "plain body" 2>&1)
 RC15=$?
-F15=$(SPINE_NO_SCAN=1 "$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+F15=$(SPINE_NO_SCAN=1 "$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent "$TEST_AGENT" \
   --title "selftest noscan escape transient" --body "plain body" 2>/dev/null | tail -1)
 mv "$BIN/spine-secrets-lint.hidden" "$BIN/spine-secrets-lint"
 if [ "$RC15" -ne 0 ] && echo "$OUT15" | grep -q "fail-closed" && [ -f "$F15" ]; then
@@ -274,16 +336,16 @@ find "$ROOT/$FIRST_SCOPE" -name "*selftest-noscan*" -delete 2>/dev/null
 # shows the intent and does NOT write; the real call sets reviewed_by/reviewed_at
 # plus an honest trail line in Status history; a repeat is a full NOOP
 # ("reviewed_by already set").
-F16=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent claude-code \
+F16=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent "$TEST_AGENT" \
   --title "selftest promote reviewed transient" --confidence verified \
   --body "review me. [[$FIRST_SCOPE]]" 2>/dev/null | tail -1)
 [ -f "$F16" ] || bad "T16 setup: transient was not created"
-DR16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent claude-code \
+DR16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent "$TEST_AGENT" \
   --reviewed-by-owner --reason "selftest T16 dry" --dry-run 2>&1)
 DRYW16=$(grep -c "^reviewed_by:" "$F16" 2>/dev/null)   # must still be 0 after dry-run
-OUT16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent claude-code \
+OUT16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent "$TEST_AGENT" \
   --reviewed-by-owner --reason "selftest T16" 2>&1)
-NOOP16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent claude-code \
+NOOP16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent "$TEST_AGENT" \
   --reviewed-by-owner --reason "selftest T16 repeat" 2>&1)
 if echo "$DR16" | grep -qF "confidence unchanged (verified), +reviewed_by: owner" \
    && [ "${DRYW16:-x}" = "0" ] \

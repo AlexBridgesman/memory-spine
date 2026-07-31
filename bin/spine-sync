@@ -11,15 +11,17 @@ export LANG="${LANG:-en_US.UTF-8}"
 set -u
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 BIN="$(cd "$(dirname "$0")" && pwd)"
-LOGDIR="$HOME/Library/Logs/AgentMemory"
+TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
+. "$TOOLS/lib/spine_paths.sh"
+LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 LOG="$LOGDIR/sync.log"
 LOCK="$LOGDIR/.sync.lock"
 mkdir -p "$LOGDIR"
 # Typical full setup adds a local bare mirror as 'origin', e.g.:
-#   git init --bare "$HOME/Library/AgentMemory/Remotes/AgentMemory.git"
+#   git init --bare "$(spine_default_remote_root)/AgentMemory.git"
 #   git -C "$ROOT" remote add origin <that path>
 # Without an origin remote, sync runs in local-only mode (commits, no push).
-REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$HOME/Library/AgentMemory/Remotes}"
+REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$(spine_default_remote_root)}"
 PRIMARY_BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
 QUIET_SECONDS=60
 GIT="${SPINE_GIT:-}"
@@ -294,7 +296,7 @@ READY="$READY
 $(changed_paths '*/INDEX.md')"
 
 # --- per-file validation + write-path cage + secrets lint + gitleaks ---
-LEDGER="$HOME/Library/Application Support/AgentMemory/ledger.tsv"   # written by spine-new: the registry of legitimate record ULIDs
+LEDGER="${SPINE_LEDGER:-$(spine_default_ledger)}"   # written by spine-new: the registry of legitimate record ULIDs
 QUARANTINED=0
 QUAR="$ROOT/_quarantine"
 is_record_path() { case "$1" in */decisions/*.md|*/facts/*.md|*/threads/*.md|*/artifacts/*.md) return 0;; *) return 1;; esac; }

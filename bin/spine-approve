@@ -16,8 +16,10 @@ import time
 
 HOME = os.path.expanduser("~")
 TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(TOOLS, "lib"))
+from spine_paths import default_log_root
 ALLOWLIST = os.path.join(TOOLS, "config", "agent-allowlist.tsv")
-LOGDIR = os.environ.get("SPINE_LOG_DIR", f"{HOME}/Library/Logs/AgentMemory")
+LOGDIR = os.environ.get("SPINE_LOG_DIR", str(default_log_root()))
 ACCESS_LOG = os.path.join(LOGDIR, "access.log")
 
 

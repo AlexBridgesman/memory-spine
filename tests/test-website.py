@@ -90,6 +90,7 @@ index = (root / "index.html").read_text(encoding="utf-8")
 technical = (root / "technical.html").read_text(encoding="utf-8")
 not_found = (root / "404.html").read_text(encoding="utf-8")
 machine_docs = (root / "agents.md").read_text(encoding="utf-8")
+readme = (repo / "README.md").read_text(encoding="utf-8")
 claim_text = "\n".join((index, technical, machine_docs))
 require(len(index.encode("utf-8")) <= 100_000, "index.html exceeds 100 KB")
 require("data:image/png;base64" not in index, "index embeds a base64 PNG")
@@ -116,8 +117,12 @@ for banned in (
     "never fails silently", "Ops-grade reliability", "survived production",
     "Every tool hoards", "Everything on the machine is trusted",
     "Any agent that can read files and run shell commands participates",
+    "never an edit", "Git keeps everything",
 ):
     require(banned.casefold() not in claim_text.casefold(), f"stale public claim remains: {banned}")
+qualified_durability = "Committed history remains available unless history is explicitly rewritten."
+require(all(qualified_durability in text for text in (readme, technical, machine_docs)),
+        "qualified durability wording drifted across README, technical, and machine docs")
 require("Backup behavior is opt-in" in index, "backup scheduling is not clearly opt-in")
 require("documented fail-open branches" in machine_docs, "access-gate fail-open behavior is missing")
 

@@ -13,35 +13,56 @@ jobs:
     name: gitleaks (full history)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       # Plain gitleaks over the whole checked-out history instead of
       # gitleaks-action: the action derives a commit range as <first>^..<last>,
       # which explodes on an initial push whose first commit has no parent.
       - name: Scan the entire history
         run: >
-          docker run --rm -v "$PWD:/repo"
-          ghcr.io/gitleaks/gitleaks:v8.24.3
+          docker run --rm --network none -v "$PWD:/repo:ro"
+          ghcr.io/gitleaks/gitleaks@sha256:e1b35e12a8c6fa8901f060459cfb6b2fc4c484d3afbe3b029733a3bbfab07055
           git --no-banner /repo
 
   selftest:
-    name: spine-selftest (macOS)
-    runs-on: macos-latest
+    name: spine-selftest (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       # The self-test is fail-closed by design: it refuses to pass when the
-      # secret scanner is missing, so CI must provide it.
-      - name: Install gitleaks
-        run: brew install gitleaks
+      # secret scanner is missing. Download an exact release and verify its
+      # published SHA-256 before making it available to later steps.
+      - name: Install pinned gitleaks
+        run: |
+          scripts/ci-install-gitleaks.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Run installer, cross-agent, recall, website and supply-chain contracts
+        run: |
+          tests/test-paths.sh
+          tests/test-installer.sh
+          tests/test-selftest-isolation.sh
+          tests/test-cross-agent-e2e.sh
+          python3 tests/test-recall-synonyms.py
+          benchmarks/recall/run.py
+          python3 tests/test-website.py
+          python3 tests/test-supply-chain.py
 
       - name: Install into a scratch HOME
         run: |
           set -euo pipefail
           echo "SPINE_HOME=$RUNNER_TEMP/spine-home" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/spine-home"
-          HOME="$RUNNER_TEMP/spine-home" ./install.sh --yes
+          HOME="$RUNNER_TEMP/spine-home" ./install.sh --apply --yes
 
       # install.sh creates the local bare mirror itself (branch-correct); the
       # self-test's T9 verifies local == mirror right after a fresh install.

@@ -1,0 +1,5 @@
+Contact: https://github.com/AlexBridgesman/memory-spine/security/advisories/new
+Policy: https://github.com/AlexBridgesman/memory-spine/blob/main/SECURITY.md
+Preferred-Languages: en, uk
+Canonical: https://memory.bridges.community/.well-known/security.txt
+Expires: 2027-12-31T23:59:59Z

@@ -22,8 +22,9 @@ export LANG="${LANG:-en_US.UTF-8}"
 set -u
 BIN="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
+. "$TOOLS/lib/spine_paths.sh"
 CONF="${SPINE_NOTIFY_CONF:-$TOOLS/config/notify.conf}"
-LOGDIR="$HOME/Library/Logs/AgentMemory"
+LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 LOG="$LOGDIR/notify.log"
 DEADLETTER="$LOGDIR/notify-deadletter.log"   # lost TG messages (drained by spine-sync / spine-health)
 mkdir -p "$LOGDIR"

@@ -14,19 +14,23 @@ Threat model, honestly:
     the vault remains a plain directory. That is why rule #1 (never store
     secret VALUES in memory) stays the primary defense, not this gate.
 
-Policy: DEFAULT-DENY. Unknown caller -> refusal + access.log entry + an alert
-to the owner with a ready-to-paste approval command (spine-approve).
+Policy for identified callers with a populated allowlist: unknown caller ->
+refusal, with best-effort logging/notification. Missing caller identity or a
+missing allowlist follows documented fail-open availability branches. This is a
+Spine-tool guardrail, not operating-system access control.
 """
 import os
 import re
 import subprocess
 import time
 
+from spine_paths import default_log_root
+
 HOME = os.path.expanduser("~")
 TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CFG = os.path.join(TOOLS, "config")
 ALLOWLIST = os.path.join(CFG, "agent-allowlist.tsv")
-LOGDIR = os.environ.get("SPINE_LOG_DIR", f"{HOME}/Library/Logs/AgentMemory")
+LOGDIR = os.environ.get("SPINE_LOG_DIR", str(default_log_root()))
 ACCESS_LOG = os.path.join(LOGDIR, "access.log")
 NOTIFY = os.path.join(TOOLS, "bin", "spine-notify")
 ALERT_COOLDOWN = 1800   # 30 min per identical caller — so a retry loop cannot spam
@@ -252,7 +256,8 @@ def check(action, scope=None, agent=None):
     who = " ← ".join(os.path.basename(c) for c in chain[:3]) or "unknown"
     return False, (f"spine: memory access BLOCKED — the caller is not approved by the owner.\n"
                    f"  chain: {who}\n"
-                   f"  memory is readable only by approved agents (default-deny policy).\n"
+                   f"  this Spine command denies identified callers absent from the allowlist.\n"
+                   f"  Direct filesystem reads are outside this gate.\n"
                    f"  The owner approves with: spine-approve \"<path fragment>\" \"label\"")
 
 

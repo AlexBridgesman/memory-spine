@@ -1,0 +1,62 @@
+[
+  {
+    "query": "staging database host",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000001"
+  },
+  {
+    "query": "rollback deploy",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000002"
+  },
+  {
+    "query": "власник доступ",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000003"
+  },
+  {
+    "query": "payment provider webhook",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000004"
+  },
+  {
+    "query": "vector index",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000005"
+  },
+  {
+    "query": "token rotation",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000006"
+  },
+  {
+    "query": "customer refund policy",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000007"
+  },
+  {
+    "query": "backup recovery objective",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000008"
+  },
+  {
+    "query": "model context limit",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000009"
+  },
+  {
+    "query": "release checksum verification",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000010"
+  },
+  {
+    "query": "where is the staging database",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000001"
+  },
+  {
+    "query": "how do we roll back a deployment",
+    "scope": "benchmark",
+    "expected_top_ulid": "01J00000000000000000000002"
+  }
+]

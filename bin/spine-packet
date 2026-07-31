@@ -30,6 +30,8 @@ import time
 
 HOME = os.path.expanduser("~")
 TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(TOOLS, "lib"))
+from spine_paths import default_log_root
 
 
 def _config_dir():
@@ -48,7 +50,7 @@ def _config_dir():
 ROOT = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
 MAP = os.path.join(_config_dir(), "cwd-map.tsv")
 PACKETS = f"{ROOT}/_index"
-MARKERS = f"{HOME}/Library/Logs/AgentMemory/markers"
+MARKERS = os.path.join(os.environ.get("SPINE_LOG_DIR", str(default_log_root())), "markers")
 TYPEDIRS = ["decisions", "facts", "threads", "artifacts"]
 DELTA_MAX = 8          # records per section
 DELTA_BYTES = 1500     # hard byte budget for the delta

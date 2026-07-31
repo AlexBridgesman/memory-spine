@@ -32,11 +32,12 @@ import time
 ROOT = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
 BIN = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(BIN)
+sys.path.insert(0, os.path.join(TOOLS, "lib"))
+from spine_paths import default_log_root
 # The scope dictionary is the tools-repo config (the controlled vocabulary
 # read by spine-new/status/promote) — triage appends to that SAME file.
 PROJECTS_TXT = os.path.join(TOOLS, "config", "projects.txt")
-LOGDIR = os.environ.get("SPINE_LOG_DIR",
-                        os.path.expanduser("~/Library/Logs/AgentMemory"))
+LOGDIR = os.environ.get("SPINE_LOG_DIR", str(default_log_root()))
 TYPEDIRS = ["decisions", "facts", "threads", "artifacts"]
 ULID_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
 SCOPE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}$")

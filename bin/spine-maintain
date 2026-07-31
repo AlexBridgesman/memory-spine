@@ -9,7 +9,8 @@ set -u
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 BIN="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
-LOGDIR="${SPINE_LOG_DIR:-$HOME/Library/Logs/AgentMemory}"
+. "$TOOLS/lib/spine_paths.sh"
+LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 mkdir -p "$LOGDIR"
 REPORT="$LOGDIR/maintain-$(date +%F).log"
 
@@ -26,7 +27,7 @@ REPORT="$LOGDIR/maintain-$(date +%F).log"
 #   EXTERNAL_VOLUME — volume name under /Volumes; empty = external checks skipped.
 [ -f "$TOOLS/config/backup.conf" ] && . "$TOOLS/config/backup.conf"
 EXTERNAL_VOLUME="${EXTERNAL_VOLUME:-}"
-REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$HOME/Library/AgentMemory/Remotes}"
+REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$(spine_default_remote_root)}"
 AGENT_BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
 TOOLS_BARE="${SPINE_TOOLS_BARE:-$REMOTE_ROOT/memory-spine.git}"
 if [ -n "$EXTERNAL_VOLUME" ]; then

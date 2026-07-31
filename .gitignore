@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
+*.log
 .DS_Store
+.hermes/
+.vercel/
 /dist/
 /*.zip
 /*.tar.gz

@@ -14,6 +14,8 @@ import argparse, os, re, sys, secrets, time, datetime
 
 ROOT = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
 TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(TOOLS, "lib"))
+from spine_paths import default_ledger, default_log_root
 def _config_dir():
     """Same resolution order as spine-gen: SPINE_CONFIG_DIR, then the tools dir,
     then the vault. Keep these in sync — a divergence sends tools to different
@@ -80,7 +82,7 @@ def _audit_direct(verdict, scope, agent, note):
     2026-07-30, round 2: with the gate module missing, SPINE_NO_GATE=1 used to
     leave no audit trail at all — 'always audited' must hold even then)."""
     import time as _t
-    logdir = os.environ.get("SPINE_LOG_DIR") or os.path.expanduser("~/Library/Logs/AgentMemory")
+    logdir = os.environ.get("SPINE_LOG_DIR") or str(default_log_root())
     try:
         os.makedirs(logdir, exist_ok=True)
         with open(os.path.join(logdir, "access.log"), "a") as f:
@@ -269,7 +271,7 @@ def main():
     # BIRTH LEDGER (v3.4, owner decision 2026-07-04): every legitimate record birth
     # is registered in the ledger. spine-sync commits new records ONLY when their
     # ULID is in the ledger; everything else is quarantined.
-    ledger = os.path.expanduser("~/Library/Application Support/AgentMemory/ledger.tsv")
+    ledger = os.path.expanduser(os.environ.get("SPINE_LEDGER", str(default_ledger())))
     os.makedirs(os.path.dirname(ledger), exist_ok=True)
     with open(ledger, "a") as lf:
         lf.write(f"{uid}\t{a.project}/{TYPES[a.type]}/{fname}\t{created}\t{a.agent}\n")

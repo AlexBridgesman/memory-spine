@@ -9,10 +9,11 @@ Goal: create a working local memory vault and CLI tools. Do not push anything to
 
 Steps:
 1. Read README.md, SECURITY.md, and templates/AgentMemory/README.md.
-2. Run:
-   ./install.sh --yes
-3. If the user wants different project names, rerun install with:
-   ./install.sh --yes --projects "personal,work,ai-infra,research"
+2. Run `./install.sh` and show the user the dry-run plan. Do not apply yet.
+3. Ask for explicit approval, then run:
+   ./install.sh --apply
+   If the user requested different project names, include:
+   --projects "personal,work,ai-infra,research"
 4. Verify the install with real commands:
    ~/dev/memory-spine/bin/spine-health
    ~/dev/memory-spine/bin/spine-selftest
@@ -20,7 +21,7 @@ Steps:
 6. Run ~/dev/memory-spine/bin/spine-sync and report whether the local git commit succeeded.
 7. Report exact paths created and any blockers.
 
-After the self-test passes, wire the OWNER'S CHANNEL — memory that cannot
+After the self-test passes, ask for separate approval before wiring the OWNER'S CHANNEL — memory that cannot
 reach its owner is a diary nobody reads (see "The owner's channel" in
 README.md): copy config/notify.conf.example to config/notify.conf, ask the
 owner whether they prefer Telegram (chat_id + a token_cmd reading their

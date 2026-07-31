@@ -3,7 +3,10 @@
 # notification (escalates to Telegram via spine-notify with a cooldown).
 export LANG="${LANG:-en_US.UTF-8}"   # UTF-8 so non-ASCII text in banners survives launchd's minimal environment
 set -u
-LOGDIR="$HOME/Library/Logs/AgentMemory"
+BIN="$(cd "$(dirname "$0")" && pwd)"
+TOOLS_DIR="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
+. "$TOOLS_DIR/lib/spine_paths.sh"
+LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 LOG="$LOGDIR/sync.log"
 mkdir -p "$LOGDIR"
 ALERTS=""
@@ -11,8 +14,6 @@ NOTES=""
 
 now=$(date +%s)
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
-BIN="$(cd "$(dirname "$0")" && pwd)"
-TOOLS_DIR="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
 # External backup destination comes from config/backup.conf (see spine-backup);
 # unset = external backups are simply "not configured", a note rather than an alert.
 BK_CONF="${SPINE_BACKUP_CONF:-$TOOLS_DIR/config/backup.conf}"

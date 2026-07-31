@@ -99,6 +99,37 @@ A third-party desktop app once picked up a global agent profile during onboardin
 - A **dead-letter queue** for notifications: undeliverable alerts are retried by the sync cycle within minutes, never lost.
 - Atomic writes, locks with TTL, log rotation, fail-closed preflight before any commit.
 
+## The owner's channel (notifications)
+
+Memory that cannot reach its owner is a diary nobody reads. Spine pushes to
+your phone; without this configured you are flying blind — set it up right
+after install:
+
+**What arrives:**
+
+- **Morning digest** — inbox topics awaiting triage, promotion candidates,
+  records assigned to you (`for_agent`), memory totals.
+- **Access-gate refusals** — the moment an unapproved runtime touches memory,
+  with a ready-to-paste `spine-approve` command.
+- **Health alarms** — packet starvation, sync gaps, stale external backups.
+- **Delayed re-delivery** — anything undeliverable waits in a dead-letter
+  queue and arrives minutes later marked `📬 Delayed`; nothing is ever lost.
+
+**Setup (pick either channel, or both):** copy
+`config/notify.conf.example` to `config/notify.conf`, then
+
+- *Telegram:* create a bot via @BotFather, put your `chat_id` in the config
+  and a `token_cmd` that prints the bot token from your secret manager — the
+  token value never lives in a file;
+- *ntfy:* set `ntfy_url` to a long random topic on ntfy.sh (or your own
+  server) and subscribe from the phone app — no bot, no account.
+
+Test with `spine-notify "hello"`, then load the launchd templates
+(`launchd/README.md`) so the digest and the sync-cycle delivery run on their
+own. Machines that must hold no secrets at all can leave both channels empty:
+messages stack up in their local dead-letter queue, and another machine of
+yours can drain it over ssh and relay through its own channel.
+
 ## Safety rules
 
 1. **Secrets are never stored as values.** Only "name + where it lives" ("API key is in 1Password item X"). A secret scanner runs on every record write and in pre-commit; CI scans the full history.

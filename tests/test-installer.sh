@@ -31,6 +31,9 @@ HOME="$APPLY_HOME" "$REPO/install.sh" --apply --yes \
   --projects "alpha,beta" --agents "agent-one,user" >/dev/null
 TOOLS="$APPLY_HOME/dev/memory-spine"
 VAULT="$APPLY_HOME/AgentMemory"
+MIRROR=$(HOME="$APPLY_HOME" bash -c \
+  '. "$1"; printf "%s/AgentMemory.git\n" "$(spine_default_remote_root)"' _ \
+  "$TOOLS/lib/spine_paths.sh")
 [ -x "$TOOLS/bin/spine-selftest" ] || fail "tools were not installed"
 [ -d "$VAULT/.git" ] || fail "vault git repository was not initialized"
 assert_line alpha "$TOOLS/config/projects.txt"
@@ -83,7 +86,7 @@ chmod 700 "$APPLY_HOME/dev"
 HOME="$APPLY_HOME" "$TOOLS/bin/spine-uninstall" --apply --yes >/dev/null
 [ ! -e "$TOOLS" ] || fail "uninstall apply did not move tools"
 [ -d "$VAULT" ] || fail "uninstall removed the vault"
-[ -d "$APPLY_HOME/Library/AgentMemory/Remotes/AgentMemory.git" ] || fail "uninstall removed the mirror"
+[ -d "$MIRROR" ] || fail "uninstall removed the mirror"
 [ ! -e "$VAULT/.git/hooks/pre-commit" ] || fail "uninstall left the canonical hook active"
 archives=("$APPLY_HOME/dev/memory-spine.uninstalled-"*)
 [ "${#archives[@]}" -eq 1 ] && [ -d "${archives[0]}" ] || fail "uninstall archive missing"

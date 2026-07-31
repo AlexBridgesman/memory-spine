@@ -44,6 +44,8 @@ release = (repo / ".github" / "workflows" / "release-integrity.yml").read_text(e
 for contract in ("pull_request:", "push:", "github.event.pull_request.head.sha"):
     if contract not in release:
         errors.append(f"release-integrity.yml: missing exact-candidate contract {contract}")
+if "cd dist && sha256sum --check SHA256SUMS" not in release:
+    errors.append("release-integrity.yml: manifest is not verified from its archive directory")
 
 if errors:
     for error in errors:

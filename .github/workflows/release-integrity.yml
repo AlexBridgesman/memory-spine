@@ -27,7 +27,7 @@ jobs:
           RELEASE_REF: ${{ github.event.pull_request.head.sha || inputs.ref || github.sha }}
         run: scripts/build-release.sh "$RELEASE_REF" dist
       - name: Verify manifest
-        run: sha256sum --check dist/SHA256SUMS
+        run: cd dist && sha256sum --check SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: memory-spine-release-integrity

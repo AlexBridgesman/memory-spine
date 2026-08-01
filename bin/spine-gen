@@ -5,7 +5,8 @@ Auto-channel filters (design v3.1): status active|blocked; sensitivity normal;
 promotion gate: confidence in (reported, verified) OR reviewed_by OR type==thread.
 candidate/legacy/untrusted/private/local_only — NEVER in the packet; the INDEX
 keeps an honest counter of hidden records.
-Packet capped by PACKET_BYTES with explicit truncation labels in the text.
+Packets use a 14,000-byte default cap with optional owner-configured per-scope
+limits and explicit truncation labels in the text.
 """
 import os, re, sys, datetime
 
@@ -40,11 +41,64 @@ def _load_list(name):
 
 PROJECTS = _load_list("projects.txt")
 TYPEDIRS = ["decisions", "facts", "threads", "artifacts"]
-PACKET_BYTES = 14000   # raised from the original 6000, which was tuned while the vault
-                       # was small; after the vault grew ~10x the byte cap was eating
-                       # entire sections (audit 2026-07-28). ~3.5k tokens per injection
-                       # is acceptable for modern context windows.
+PACKET_BYTES = 14000   # default; owner-configured per-scope limits are loaded below
+MIN_PACKET_BYTES = 4000
 INDEX_LINES = 200
+
+
+def _packet_limit_warning(path, line_no, message):
+    """Warn without repeating owner-controlled config content into logs."""
+    location = os.path.basename(path)
+    if line_no is not None:
+        location += f":{line_no}"
+    print(f"spine-gen: {location}: {message}", file=sys.stderr)
+
+
+def _load_packet_limits():
+    """Read optional per-scope byte caps; malformed entries never abort generation."""
+    path = os.path.join(CFG, "packet-limits.conf")
+    try:
+        handle = open(path, "rb")
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        _packet_limit_warning(path, None, "cannot read; using defaults")
+        return {}
+
+    limits = {}
+    with handle:
+        for line_no, raw in enumerate(handle, 1):
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                _packet_limit_warning(path, line_no, "invalid UTF-8; ignored")
+                continue
+            entry = text.strip()
+            if not entry or entry.startswith("#"):
+                continue
+            if "\t" in entry:
+                scope, value = entry.split("\t", 1)
+            elif "=" in entry:
+                scope, value = entry.split("=", 1)
+            else:
+                _packet_limit_warning(path, line_no, "malformed entry; ignored")
+                continue
+            scope = scope.strip()
+            if scope not in PROJECTS:
+                _packet_limit_warning(path, line_no, "unknown scope; ignored")
+                continue
+            try:
+                byte_limit = int(value.strip())
+            except ValueError:
+                _packet_limit_warning(path, line_no, "byte limit is not an integer; ignored")
+                continue
+            if scope in limits:
+                _packet_limit_warning(path, line_no, "duplicate scope; last value wins")
+            limits[scope] = max(MIN_PACKET_BYTES, byte_limit)
+    return limits
+
+
+PACKET_LIMITS = _load_packet_limits()
 
 
 def _atomic_write(path, content):
@@ -142,6 +196,7 @@ def line(r):
     return f"{s} {pin}[{t}] {r.get('title','(untitled)')}{extra}{guest}{sup} ({os.path.basename(r['_path'])})"
 
 def gen_project(project, inbox_n=0):
+    packet_bytes = PACKET_LIMITS.get(project, PACKET_BYTES)
     for td in TYPEDIRS:   # a scope listed in the dictionary always has its folders
         os.makedirs(os.path.join(ROOT, project, td), exist_ok=True)
     own = collect(project)
@@ -259,7 +314,7 @@ def gen_project(project, inbox_n=0):
                 f"records beyond this packet: {len(recs) - shipped}"
                 + (f"; superseded hidden: {superseded_n}" if superseded_n else "") + ")",
                 "=== END MEMORY PACKET ==="]
-        if len("\n".join(P + body + tail).encode()) <= PACKET_BYTES:
+        if len(("\n".join(P + body + tail) + "\n").encode()) <= packet_bytes:
             chosen = sum_len
             break
     while True:
@@ -270,7 +325,7 @@ def gen_project(project, inbox_n=0):
                 + (f"; superseded hidden: {superseded_n}" if superseded_n else "") + ")",
                 "=== END MEMORY PACKET ==="]
         out = "\n".join(P + body + tail)
-        if len(out.encode()) <= PACKET_BYTES:
+        if len((out + "\n").encode()) <= packet_bytes:
             break
         # drop from the largest section, leaving each at least 2 records
         cand = [(keep[t], t) for t, g in groups if keep.get(t, 0) > 2]

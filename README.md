@@ -27,7 +27,7 @@ The core requires no database or hosted memory service and sends no telemetry.
 ```mermaid
 flowchart TD
     A["Agent session<br/>(Claude Code · Codex · any CLI)"] -->|"spine-new — the only write path<br/>validation · secret scan · dedup"| V["~/AgentMemory<br/>git canon, append-oriented records"]
-    V -->|"spine-gen — distillation"| P["Packet ≤14 KB + per-agent delta<br/>honest truncation counters"]
+    V -->|"spine-gen — distillation"| P["Packet default ≤14 KB; optional per-scope cap<br/>honest truncation counters"]
     P -->|"access gate<br/>process-ancestry guardrail"| S["Next session<br/>configured hook or explicit packet load"]
     S -.->|"the cycle closes"| A
     V ---|"configured schedule"| G["spine-sync<br/>commit → optional local bare mirror<br/>optional external backup"]
@@ -99,7 +99,8 @@ A third-party desktop app once picked up a global agent profile during onboardin
 ## Reliability
 
 - `spine-selftest` — an 18-test suite covering write mechanics, inline secret refusal, the dedup gate, supersede semantics, promotion review semantics and packet generation. Access-gate behavior is tested separately.
-- `spine-health` — starvation alerts (a scope shipping <35% or zero facts), sync-gap detection, backup staleness.
+- **Packet limits:** Optional per-scope packet caps are read from config/packet-limits.conf; unlisted scopes keep the 14,000-byte default, and configured values below 4,000 bytes are clamped. Copy config/packet-limits.conf.example to that path to opt in.
+- `spine-health` — For scopes with at least 20 eligible records, packet starvation requires both coverage below 35% and fewer than 55 shipped records; shipping zero facts always alerts. It also detects sync gaps and backup staleness.
 - A **dead-letter queue** for notifications: undeliverable alerts remain visible locally and can be retried by the sync cycle.
 - Atomic writes, locks with TTL, log rotation, fail-closed preflight before any commit.
 

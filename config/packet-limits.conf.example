@@ -1,0 +1,12 @@
+# Optional per-scope packet byte caps.
+#
+# Copy this file to packet-limits.conf to opt in. Scope names must already
+# exist in projects.txt. Use either a tab or "=" between the scope and byte
+# limit. Unlisted scopes keep the 14,000-byte default; values below 4,000 are
+# clamped to 4,000. Invalid entries warn by line number and are ignored.
+#
+# Non-ASCII packet text often uses multiple UTF-8 bytes per character, so two
+# scopes with the same record count can need different byte caps.
+#
+# research=20000
+# work	18000

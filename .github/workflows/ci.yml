@@ -45,12 +45,14 @@ jobs:
           scripts/ci-install-gitleaks.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
-      - name: Run installer, cross-agent, recall, website and supply-chain contracts
+      - name: Run installer, packet, cross-agent, recall, website and supply-chain contracts
         run: |
           tests/test-paths.sh
           tests/test-installer.sh
           tests/test-selftest-isolation.sh
           tests/test-cross-agent-e2e.sh
+          tests/test-packet-limits.sh
+          python3 tests/test-packet-health.py
           python3 tests/test-recall-synonyms.py
           benchmarks/recall/run.py
           python3 tests/test-website.py

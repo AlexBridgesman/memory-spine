@@ -191,30 +191,18 @@ if [ -s "$DL" ]; then
     touch "$DLNUDGE"
   fi
 fi
-# 2b-2) PACKET STARVATION. Lesson from a past audit: the packet byte limit did
-# not grow with the corpus, and the main memory channel served ~14% instead of
-# ~100% for a month -- silently, because the only number in the logs was
-# computed BEFORE truncation. Now spine-gen writes real statistics, and here we
-# alert whenever a scope with >=20 passing records ships <35% of them or zero facts.
+# 2b-2) PACKET STARVATION. spine-gen writes post-truncation statistics. For a
+# scope with at least 20 eligible records, low coverage is unhealthy only when
+# BOTH fewer than 35% and fewer than 55 records ship; zero shipped facts always
+# alerts. The classifier is separately tested and malformed statistics fail
+# visibly instead of disabling this channel with a traceback.
 PSTATS="$ROOT/_index/.packet-stats.tsv"
 if [ -f "$PSTATS" ]; then
-  starved=$(/usr/bin/python3 - "$PSTATS" << 'PYEOF'
-import sys
-bad = []
-for line in open(sys.argv[1], encoding="utf-8"):
-    c = line.rstrip("\n").split("\t")
-    if len(c) < 4:
-        continue
-    proj, passed, shipped, has_facts = c[0], int(c[1]), int(c[2]), c[3] == "1"
-    if passed < 20:
-        continue
-    pct = 100 * shipped // max(1, passed)
-    if pct < 35 or not has_facts:
-        bad.append(f"{proj} {pct}%{'' if has_facts else ' NO FACTS'}")
-print("; ".join(bad))
-PYEOF
-)
-  [ -n "$starved" ] && ALERTS="$ALERTS\n- packet starving: $starved -- raise PACKET_BYTES or clean up the scope"
+  if ! starved=$(/usr/bin/python3 "$TOOLS_DIR/lib/spine_packet_health.py" --strict "$PSTATS"); then
+    ALERTS="$ALERTS\n- packet statistics invalid or unreadable -- run spine-gen and inspect its warnings"
+  elif [ -n "$starved" ]; then
+    ALERTS="$ALERTS\n- packet starving: $starved -- set config/packet-limits.conf for the affected scope or archive/supersede stale records"
+  fi
 fi
 
 # 2c) Dead maintenance loop (a past audit found 5a/5b had not run for weeks,

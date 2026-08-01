@@ -91,6 +91,9 @@ technical = (root / "technical.html").read_text(encoding="utf-8")
 not_found = (root / "404.html").read_text(encoding="utf-8")
 machine_docs = (root / "agents.md").read_text(encoding="utf-8")
 readme = (repo / "README.md").read_text(encoding="utf-8")
+architecture = (repo / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+changelog = (repo / "CHANGELOG.md").read_text(encoding="utf-8")
+spine_gen = (repo / "bin" / "spine-gen").read_text(encoding="utf-8")
 claim_text = "\n".join((index, technical, machine_docs))
 require(len(index.encode("utf-8")) <= 100_000, "index.html exceeds 100 KB")
 require("data:image/png;base64" not in index, "index embeds a base64 PNG")
@@ -118,11 +121,33 @@ for banned in (
     "Every tool hoards", "Everything on the machine is trusted",
     "Any agent that can read files and run shell commands participates",
     "never an edit", "Git keeps everything",
+    "Each scope compiles into a ≤14 KB packet", "Кожен scope збирається в packet ≤14 КБ",
+    "Packet ≤14 KB + per-agent delta", "packet</b> (≤14 KB",
 ):
     require(banned.casefold() not in claim_text.casefold(), f"stale public claim remains: {banned}")
 qualified_durability = "Committed history remains available unless history is explicitly rewritten."
 require(all(qualified_durability in text for text in (readme, technical, machine_docs)),
         "qualified durability wording drifted across README, technical, and machine docs")
+packet_limits_contract = (
+    "Optional per-scope packet caps are read from config/packet-limits.conf; unlisted scopes keep "
+    "the 14,000-byte default, and configured values below 4,000 bytes are clamped."
+)
+packet_limits_opt_in = "Copy config/packet-limits.conf.example to that path to opt in."
+starvation_contract = (
+    "For scopes with at least 20 eligible records, packet starvation requires both coverage below "
+    "35% and fewer than 55 shipped records; shipping zero facts always alerts."
+)
+for surface_name, surface in (
+    ("README", readme), ("architecture", architecture),
+    ("technical", technical), ("machine docs", machine_docs),
+):
+    require(packet_limits_contract in surface, f"{surface_name}: packet-limit contract missing")
+    require(packet_limits_opt_in in surface, f"{surface_name}: packet-limit opt-in instruction missing")
+    require(starvation_contract in surface, f"{surface_name}: starvation contract missing")
+public_release_text = "\n".join((claim_text, readme, architecture, changelog, spine_gen))
+for banned in ("Born in production", "author's production vault", "164-record", "four scopes capped"):
+    require(banned.casefold() not in public_release_text.casefold(),
+            f"private or unsupported production claim remains: {banned}")
 require("Backup behavior is opt-in" in index, "backup scheduling is not clearly opt-in")
 require("documented fail-open branches" in machine_docs, "access-gate fail-open behavior is missing")
 

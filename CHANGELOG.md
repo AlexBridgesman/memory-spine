@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.3.0 — 2026-08-01
+
+- Optional per-scope packet byte caps from `config/packet-limits.conf`; missing
+  configuration preserves the 14,000-byte default, and malformed entries warn
+  by line number without repeating owner-controlled values into logs.
+- Packet-starvation classification now combines relative coverage with a
+  55-record absolute window while preserving the zero-facts invariant.
+- Dedicated packet-limit and health-boundary contracts run in the macOS/Linux
+  CI matrix, and the opt-in example is covered by installer verification.
+- README, architecture, technical reference, and machine-readable mirrors use
+  the same packet-limit and starvation semantics.
+
+## v0.2.1 — 2026-07-31
+
+- Qualified the durability wording across README, technical/whitepaper routes,
+  and machine-readable docs; a regression contract rejects the previous
+  absolute wording.
+
+## v0.2.0 — 2026-07-31
+
+- Made installation preview-first and explicit with `--apply`, preserving owner
+  configuration across upgrades and keeping uninstall reversible.
+- Added macOS/Linux CI, isolated selftest and cross-agent verification,
+  deterministic exact-ref release archives, immutable action pins, and the
+  repository-owned bilingual website plus machine-readable docs.
+
 ## v0.1.1 — 2026-07-31
 
 - **`spine-promote`: a confidence NOOP no longer swallows `--reviewed-by-owner`**

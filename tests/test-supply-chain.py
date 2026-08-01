@@ -59,6 +59,9 @@ builder = (repo / "scripts" / "build-release.sh").read_text(encoding="utf-8")
 for contract in ("RELEASE-METADATA", 'mtime=0', 'gzip.GzipFile(filename=""'):
     if contract not in builder:
         errors.append(f"build-release.sh: deterministic embedded provenance missing {contract}")
+installer = (repo / "install.sh").read_text(encoding="utf-8")
+if '[ -e "$SCRIPT_DIR/.git" ]' not in installer:
+    errors.append("install.sh: extracted archive can inherit provenance from an unrelated parent repository")
 
 paths = (repo / "lib" / "spine_paths.sh").read_text(encoding="utf-8")
 for contract in ("spine_resolve_python", "SPINE_PYTHON", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"):

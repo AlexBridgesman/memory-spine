@@ -322,17 +322,21 @@ find "$MEMORY_ROOT" -name '*.md' -not -path '*/.git/*' -print0 | xargs -0 "$TOOL
 release_metadata() {
   sed -n "s/^$1=//p" "$SCRIPT_DIR/RELEASE-METADATA" 2>/dev/null | head -1
 }
-SRC_COMMIT="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || release_metadata commit || true)"
-SRC_TREE="$(git -C "$SCRIPT_DIR" rev-parse 'HEAD^{tree}' 2>/dev/null || release_metadata tree || true)"
-SRC_VERSION="$(git -C "$SCRIPT_DIR" describe --tags --always 2>/dev/null || release_metadata version || true)"
+if [ -e "$SCRIPT_DIR/.git" ]; then
+  SRC_COMMIT="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  SRC_TREE="$(git -C "$SCRIPT_DIR" rev-parse 'HEAD^{tree}' 2>/dev/null || true)"
+  SRC_VERSION="$(git -C "$SCRIPT_DIR" describe --tags --always 2>/dev/null || true)"
+  [ -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null || true)" ] \
+    && SRC_DIRTY=true || SRC_DIRTY=false
+else
+  SRC_COMMIT="$(release_metadata commit || true)"
+  SRC_TREE="$(release_metadata tree || true)"
+  SRC_VERSION="$(release_metadata version || true)"
+  SRC_DIRTY=false
+fi
 printf '%s' "$SRC_COMMIT" | grep -Eq '^[0-9a-f]{40,64}$' || SRC_COMMIT=unknown
 printf '%s' "$SRC_TREE" | grep -Eq '^[0-9a-f]{40,64}$' || SRC_TREE=unknown
 printf '%s' "$SRC_VERSION" | grep -Eq '^[A-Za-z0-9._-]+$' || SRC_VERSION=unknown
-if [ -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null || true)" ]; then
-  SRC_DIRTY=true
-else
-  SRC_DIRTY=false
-fi
 INSTALL_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 FIRST_SCOPE="$(grep -v '^[[:space:]]*#' "$TOOLS_DIR/config/projects.txt" | grep -v '^inbox$' | grep . | head -1)"
 [ -n "$FIRST_SCOPE" ] || { echo "No non-inbox project is available for the genesis record" >&2; exit 1; }

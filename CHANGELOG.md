@@ -2,13 +2,17 @@
 
 ## v0.3.0 — 2026-08-01
 
-- Optional per-scope packet byte caps from `config/packet-limits.conf`; missing
-  configuration preserves the 14,000-byte default, and malformed entries warn
-  by line number without repeating owner-controlled values into logs.
-- Packet-starvation classification now combines relative coverage with a
-  55-record absolute window while preserving the zero-facts invariant.
-- Dedicated packet-limit and health-boundary contracts run in the macOS/Linux
-  CI matrix, and the opt-in example is covered by installer verification.
+- Optional per-scope delivery caps from `config/packet-limits.conf`; missing
+  configuration preserves the 14,000-byte default, malformed entries use
+  value-blind warnings, and complete `spine-packet` output stays within the cap.
+- Pins are emitted first and never trimmed; generation fails rather than
+  publishing a packet that cannot fit every pin. Retained records are counted
+  by identity, so blocked facts/decisions cannot inflate health statistics.
+- `spine-gen` publishes one atomic all-scope statistics snapshot even for a
+  targeted invocation. Health rejects missing, stale, malformed, duplicate,
+  unexpected, or incomplete scope evidence before applying starvation policy.
+- Dedicated packet-limit, final-delivery, and health-boundary contracts run in
+  the macOS/Linux CI matrix, and the opt-in example is covered by installer verification.
 - README, architecture, technical reference, and machine-readable mirrors use
   the same packet-limit and starvation semantics.
 
@@ -29,8 +33,8 @@
 ## v0.1.1 — 2026-07-31
 
 - **`spine-promote`: a confidence NOOP no longer swallows `--reviewed-by-owner`**
-  (caught during live use: the early return exited before the reviewed_by
-  insertion branch, so the flag was lost silently). When the level is already
+  (the early return previously exited before the reviewed_by insertion branch,
+  so the flag was lost silently). When the level is already
   at the target and reviewed_by is absent, the review fields are still set
   with an honest Status-history line; the output distinguishes a full NOOP
   from "confidence unchanged, +reviewed_by: owner". The candidate/legacy

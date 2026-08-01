@@ -35,6 +35,8 @@ MIRROR=$(HOME="$APPLY_HOME" bash -c \
   '. "$1"; printf "%s/AgentMemory.git\n" "$(spine_default_remote_root)"' _ \
   "$TOOLS/lib/spine_paths.sh")
 [ -x "$TOOLS/bin/spine-selftest" ] || fail "tools were not installed"
+[ -f "$TOOLS/lib/spine_packet_limits.py" ] || fail "shared packet-limit module was not installed"
+[ -f "$TOOLS/lib/spine_packet_health.py" ] || fail "packet-health module was not installed"
 [ -d "$VAULT/.git" ] || fail "vault git repository was not initialized"
 assert_line alpha "$TOOLS/config/projects.txt"
 assert_line beta "$TOOLS/config/projects.txt"

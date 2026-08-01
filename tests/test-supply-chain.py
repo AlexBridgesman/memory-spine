@@ -35,7 +35,7 @@ if "--network none" not in ci or ':/repo:ro' not in ci:
 for command in (
     "tests/test-installer.sh", "tests/test-paths.sh", "tests/test-selftest-isolation.sh",
     "tests/test-cross-agent-e2e.sh", "tests/test-recall-synonyms.py",
-    "tests/test-packet-limits.sh", "tests/test-packet-health.py",
+    "tests/test-packet-limits.sh", "tests/test-packet-delivery.sh", "tests/test-packet-health.py",
     "tests/test-website.py", "benchmarks/recall/run.py",
 ):
     if command not in ci:
@@ -47,6 +47,10 @@ for contract in ("pull_request:", "push:", "github.event.pull_request.head.sha")
         errors.append(f"release-integrity.yml: missing exact-candidate contract {contract}")
 if "cd dist && sha256sum --check SHA256SUMS" not in release:
     errors.append("release-integrity.yml: manifest is not verified from its archive directory")
+if "default: v0.1.1" in release:
+    errors.append("release-integrity.yml: manual packaging still defaults to a stale release ref")
+if "description: Exact tag or full commit SHA to package" not in release:
+    errors.append("release-integrity.yml: manual packaging does not require an explicit exact ref")
 
 if errors:
     for error in errors:

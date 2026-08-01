@@ -108,8 +108,7 @@ PYEOF
 case "$MINE" in ''|*[!0-9]*) MINE=0 ;; esac
 case "$MINE_OLD" in ''|*[!0-9]*) MINE_OLD=0 ;; esac
 
-# 4b) memory-access-gate denials over the last day (the gate was born from a
-# real incident -- denials deserve daily visibility)
+# 4b) memory-access-gate denials over the last day deserve daily visibility.
 DENIES=$(awk -F'\t' -v d="$(date '+%F')" '$1 ~ d && $2 == "DENY"' "$LOGDIR/access.log" 2>/dev/null | wc -l | tr -d ' ')
 case "$DENIES" in ''|*[!0-9]*) DENIES=0 ;; esac
 

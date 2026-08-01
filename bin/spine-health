@@ -28,6 +28,11 @@ if [ -z "$GIT" ]; then
   done
   [ -z "$GIT" ] && GIT="$(command -v git 2>/dev/null || echo git)"
 fi
+PYTHON="${SPINE_PYTHON:-$(command -v python3 2>/dev/null || true)}"
+if [ -z "$PYTHON" ]; then
+  PYTHON=false
+  ALERTS="$ALERTS\n- python3 unavailable -- packet and status health checks are incomplete"
+fi
 # BSD (macOS) stat first, GNU stat as fallback so cron/systemd on Linux works too
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
 
@@ -193,16 +198,32 @@ if [ -s "$DL" ]; then
 fi
 # 2b-2) PACKET STARVATION. spine-gen writes post-truncation statistics. For a
 # scope with at least 20 eligible records, low coverage is unhealthy only when
-# BOTH fewer than 35% and fewer than 55 records ship; zero shipped facts always
-# alerts. The classifier is separately tested and malformed statistics fail
+# BOTH fewer than 35% and fewer than 55 records ship; within that eligible set,
+# zero shipped facts alerts. Missing, stale, partial, or malformed snapshots fail
 # visibly instead of disabling this channel with a traceback.
 PSTATS="$ROOT/_index/.packet-stats.tsv"
-if [ -f "$PSTATS" ]; then
-  if ! starved=$(/usr/bin/python3 "$TOOLS_DIR/lib/spine_packet_health.py" --strict "$PSTATS"); then
-    ALERTS="$ALERTS\n- packet statistics invalid or unreadable -- run spine-gen and inspect its warnings"
+PDICT="$ROOT/config/projects.txt"
+[ -f "$PDICT" ] || PDICT="$TOOLS_DIR/config/projects.txt"
+PSTATS_MAX_AGE="${SPINE_PACKET_STATS_MAX_AGE:-86400}"
+packet_stats_ok=1
+case "$PSTATS_MAX_AGE" in ''|*[!0-9]*) packet_stats_ok=0 ;; esac
+if [ ! -f "$PSTATS" ] || [ ! -f "$PDICT" ]; then
+  packet_stats_ok=0
+else
+  stats_mtime=$(mtime "$PSTATS" || echo 0)
+  case "$stats_mtime" in ''|*[!0-9]*) packet_stats_ok=0 ;;
+    *) [ $((now - stats_mtime)) -gt "$PSTATS_MAX_AGE" ] && packet_stats_ok=0 ;;
+  esac
+fi
+if [ "$packet_stats_ok" -eq 1 ]; then
+  if ! starved=$("$PYTHON" "$TOOLS_DIR/lib/spine_packet_health.py" --strict --projects "$PDICT" "$PSTATS"); then
+    packet_stats_ok=0
   elif [ -n "$starved" ]; then
     ALERTS="$ALERTS\n- packet starving: $starved -- set config/packet-limits.conf for the affected scope or archive/supersede stale records"
   fi
+fi
+if [ "$packet_stats_ok" -eq 0 ]; then
+  ALERTS="$ALERTS\n- packet statistics missing, stale, incomplete, or unreadable -- run spine-gen and inspect its warnings"
 fi
 
 # 2c) Dead maintenance loop (a past audit found 5a/5b had not run for weeks,
@@ -233,7 +254,7 @@ cd "$ROOT" 2>/dev/null && {
     fi
     mt=$(mtime "$f")
     [ $(( (now - mt) / 3600 )) -gt 24 ] && ALERTS="$ALERTS\n- uncommitted for >24h: $f"
-  done < <("$GIT" status --porcelain -z -uall -- '*.md' | /usr/bin/python3 -c '
+  done < <("$GIT" status --porcelain -z -uall -- '*.md' | "$PYTHON" -c '
 import sys
 items = sys.stdin.buffer.read().split(b"\0")
 i = 0

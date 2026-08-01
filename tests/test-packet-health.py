@@ -37,6 +37,23 @@ require(starved == ["below-both 27%", "no-facts 80% NO FACTS"],
 require(not warnings, f"valid rows emitted warnings: {warnings!r}")
 
 warnings = []
+require(
+    health.classify(["alpha\t20\t20\t1\n"], warnings.append,
+                    expected_scopes=["alpha", "beta"]) == [],
+    "scope-completeness validation changed health labels",
+)
+require(any("missing configured scope row" in warning for warning in warnings),
+        f"missing expected scope was accepted: {warnings!r}")
+warnings = []
+health.classify(
+    ["alpha\t20\t20\t1\n", "alpha\t20\t20\t1\n", "extra\t20\t20\t1\n"],
+    warnings.append,
+    expected_scopes=["alpha"],
+)
+require(any("duplicate scope" in warning for warning in warnings), "duplicate scope row was accepted")
+require(any("unexpected scope" in warning for warning in warnings), "unexpected scope row was accepted")
+
+warnings = []
 malformed = [
     "too\tfew\tcolumns\n",
     "bad-integer\ttwenty\t4\t1\n",
@@ -57,9 +74,12 @@ for private_value in ("too", "bad-integer", "shipped-too-many", "bad-facts-flag"
 with tempfile.TemporaryDirectory(prefix="memory-spine-packet-health.") as tmp:
     tmp_path = Path(tmp)
     stats = tmp_path / "stats.tsv"
+    projects = tmp_path / "projects.txt"
+    projects.write_text("below-both\nabsolute-window\n", encoding="utf-8")
     stats.write_text("below-both\t200\t54\t1\nabsolute-window\t200\t55\t1\n", encoding="utf-8")
     proc = subprocess.run(
-        [sys.executable, str(repo / "lib" / "spine_packet_health.py"), str(stats)],
+        [sys.executable, str(repo / "lib" / "spine_packet_health.py"),
+         "--projects", str(projects), str(stats)],
         text=True,
         capture_output=True,
         check=False,
@@ -67,6 +87,17 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-packet-health.") as tmp:
     require(proc.returncode == 0, f"health CLI failed: {proc.stderr}")
     require(proc.stdout.strip() == "below-both 27%", f"health CLI output drifted: {proc.stdout!r}")
     require(proc.stderr == "", f"valid health CLI emitted warning: {proc.stderr!r}")
+
+    stats.write_bytes(b"")
+    empty_proc = subprocess.run(
+        [sys.executable, str(repo / "lib" / "spine_packet_health.py"), "--strict",
+         "--projects", str(projects), str(stats)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    require(empty_proc.returncode == 3, "strict health mode accepted empty statistics")
+    require("empty packet statistics" in empty_proc.stderr, "empty statistics warning missing")
 
     stats.write_bytes(b"private-row-\xff\t20\t10\t1\nhealthy\t20\t20\t1\n")
     proc = subprocess.run(
@@ -104,6 +135,7 @@ health_script = (repo / "bin" / "spine-health").read_text(encoding="utf-8")
 require("lib/spine_packet_health.py" in health_script, "spine-health does not invoke tested classifier")
 require("--strict" in health_script, "spine-health does not fail visibly on malformed statistics")
 require("config/packet-limits.conf" in health_script, "starvation remediation ignores per-scope config")
+require("/usr/bin/python3" not in health_script, "spine-health still hard-codes /usr/bin/python3")
 
 # Exercise the production shell wiring in an isolated install layout. Other
 # health channels deliberately alert because this is not a live git vault; the
@@ -117,7 +149,8 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
     logs = base / "logs"
     notify_log = base / "notify.log"
     for directory in (tools / "bin", tools / "lib", tools / "config",
-                      root / "_index", root / "config", root / "alpha" / "facts", logs):
+                      root / "_index", root / "config", root / "alpha" / "facts",
+                      root / "beta" / "facts", logs):
         directory.mkdir(parents=True, exist_ok=True)
     shutil.copy2(repo / "bin" / "spine-health", tools / "bin" / "spine-health")
     shutil.copy2(repo / "lib" / "spine_packet_health.py", tools / "lib" / "spine_packet_health.py")
@@ -128,8 +161,8 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
         encoding="utf-8",
     )
     notifier.chmod(0o755)
-    (root / "config" / "projects.txt").write_text("alpha\n", encoding="utf-8")
-    (tools / "config" / "projects.txt").write_text("alpha\n", encoding="utf-8")
+    (root / "config" / "projects.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    (tools / "config" / "projects.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     stats = root / "_index" / ".packet-stats.tsv"
     env = os.environ.copy()
     env.update({
@@ -139,11 +172,19 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
         "SPINE_LOG_DIR": str(logs),
         "SPINE_TEST_NOTIFY_LOG": str(notify_log),
         "SPINE_GIT": shutil.which("git") or "git",
+        "SPINE_PYTHON": sys.executable,
+        "SPINE_PACKET_STATS_MAX_AGE": "3600",
     })
 
-    def run_health(stats_bytes: bytes) -> tuple[subprocess.CompletedProcess[str], str]:
-        stats.write_bytes(stats_bytes)
+    def run_health(stats_bytes: bytes | None, *, stale: bool = False) -> tuple[subprocess.CompletedProcess[str], str]:
+        if stats_bytes is None:
+            stats.unlink(missing_ok=True)
+        else:
+            stats.write_bytes(stats_bytes)
+            if stale:
+                os.utime(stats, (0, 0))
         (logs / "sync.log").unlink(missing_ok=True)
+        (logs / ".health-alert-tg").unlink(missing_ok=True)
         result = subprocess.run(
             ["/bin/bash", str(tools / "bin" / "spine-health")],
             env=env,
@@ -153,17 +194,29 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
         )
         return result, (logs / "sync.log").read_text(encoding="utf-8")
 
-    proc, health_log = run_health(b"alpha\t200\t54\t1\n")
+    proc, health_log = run_health(b"alpha\t200\t54\t1\nbeta\t20\t20\t1\n")
     require(proc.returncode == 1, "isolated starving health run did not alert")
     require("packet starving: alpha 27%" in health_log, "starvation did not reach spine-health alert log")
 
-    proc, health_log = run_health(b"alpha\t200\t55\t1\n")
+    proc, health_log = run_health(b"alpha\t200\t55\t1\nbeta\t20\t20\t1\n")
     require(proc.returncode == 1, "isolated health fixture unexpectedly had no baseline alerts")
     require("packet starving:" not in health_log, "absolute 55-record window still alerted")
 
-    proc, health_log = run_health(b"private-row-\xff\t20\t10\t1\n")
+    proc, health_log = run_health(b"private-row-\xff\t20\t10\t1\nbeta\t20\t20\t1\n")
     require(proc.returncode == 1, "malformed strict health run did not alert")
-    require("packet statistics invalid or unreadable" in health_log,
+    require("packet statistics missing, stale, incomplete, or unreadable" in health_log,
             "malformed packet statistics did not reach spine-health alert log")
     require("private-row" not in proc.stderr, "integration warning leaked raw packet-stat content")
+
+    proc, health_log = run_health(b"alpha\t20\t20\t1\n")
+    require("packet statistics missing, stale, incomplete, or unreadable" in health_log,
+            "partial scope snapshot did not alert")
+
+    proc, health_log = run_health(None)
+    require("packet statistics missing, stale, incomplete, or unreadable" in health_log,
+            "missing statistics did not alert")
+
+    proc, health_log = run_health(b"alpha\t20\t20\t1\nbeta\t20\t20\t1\n", stale=True)
+    require("packet statistics missing, stale, incomplete, or unreadable" in health_log,
+            "stale statistics did not alert")
 print("packet-health-test: PASS")

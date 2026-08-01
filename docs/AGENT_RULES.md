@@ -28,7 +28,7 @@ NEW TOPICS
 
 CHECKPOINTS (anti-amnesia)
 - Write at checkpoints, not at session end: after EVERY completed stage (merge, deploy, fix, plan change) record it IMMEDIATELY. Context compaction can strike at any moment and nothing will warn you; unwritten = lost.
-- Durable environment facts (how to connect to a service, where tokens live) → spine-new --pin. Pins ride at the top of every packet and never fall out. Pinning is rare — reserve it for long-lived environment truths.
+- Durable environment facts (how to connect to a service, where tokens live) → `spine-new --pin`. Pins ride at the top of every packet and are never dropped; if all pins cannot fit the configured cap, generation fails instead of publishing an incomplete packet. Pinning is rare — reserve it for long-lived environment truths.
 - After a compaction, re-read the packet and the scope INDEX, then write anything important that exists only in your session memory.
 ```
 

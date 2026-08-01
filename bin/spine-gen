@@ -12,6 +12,8 @@ import os, re, sys, datetime
 
 ROOT = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
 TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(TOOLS, "lib"))
+from spine_packet_limits import base_packet_budget, delivery_limit, load_limits
 OUT = os.path.join(ROOT, "_index")
 # Root path as displayed inside generated text (packet hints), home collapsed to ~
 DISPLAY_ROOT = re.sub("^" + re.escape(os.path.expanduser("~")), "~", ROOT, count=1)
@@ -41,72 +43,40 @@ def _load_list(name):
 
 PROJECTS = _load_list("projects.txt")
 TYPEDIRS = ["decisions", "facts", "threads", "artifacts"]
-PACKET_BYTES = 14000   # default; owner-configured per-scope limits are loaded below
-MIN_PACKET_BYTES = 4000
 INDEX_LINES = 200
 
 
-def _packet_limit_warning(path, line_no, message):
-    """Warn without repeating owner-controlled config content into logs."""
-    location = os.path.basename(path)
-    if line_no is not None:
-        location += f":{line_no}"
-    print(f"spine-gen: {location}: {message}", file=sys.stderr)
+def _packet_limit_warning(message):
+    print(f"spine-gen: {message}", file=sys.stderr)
 
 
-def _load_packet_limits():
-    """Read optional per-scope byte caps; malformed entries never abort generation."""
-    path = os.path.join(CFG, "packet-limits.conf")
-    try:
-        handle = open(path, "rb")
-    except FileNotFoundError:
-        return {}
-    except OSError:
-        _packet_limit_warning(path, None, "cannot read; using defaults")
-        return {}
-
-    limits = {}
-    with handle:
-        for line_no, raw in enumerate(handle, 1):
-            try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                _packet_limit_warning(path, line_no, "invalid UTF-8; ignored")
-                continue
-            entry = text.strip()
-            if not entry or entry.startswith("#"):
-                continue
-            if "\t" in entry:
-                scope, value = entry.split("\t", 1)
-            elif "=" in entry:
-                scope, value = entry.split("=", 1)
-            else:
-                _packet_limit_warning(path, line_no, "malformed entry; ignored")
-                continue
-            scope = scope.strip()
-            if scope not in PROJECTS:
-                _packet_limit_warning(path, line_no, "unknown scope; ignored")
-                continue
-            try:
-                byte_limit = int(value.strip())
-            except ValueError:
-                _packet_limit_warning(path, line_no, "byte limit is not an integer; ignored")
-                continue
-            if scope in limits:
-                _packet_limit_warning(path, line_no, "duplicate scope; last value wins")
-            limits[scope] = max(MIN_PACKET_BYTES, byte_limit)
-    return limits
-
-
-PACKET_LIMITS = _load_packet_limits()
+PACKET_LIMITS = load_limits(CFG, PROJECTS, _packet_limit_warning)
 
 
 def _atomic_write(path, content):
     """tmp + os.replace: a concurrent reader never sees a truncated file (v3.3 review)."""
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(content)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+class PacketLimitError(RuntimeError):
+    pass
+
+
+def _invalidate_packet_stats():
+    try:
+        os.unlink(os.path.join(OUT, ".packet-stats.tsv"))
+    except OSError:
+        pass
 
 def parse_fm(path):
     try:
@@ -196,7 +166,8 @@ def line(r):
     return f"{s} {pin}[{t}] {r.get('title','(untitled)')}{extra}{guest}{sup} ({os.path.basename(r['_path'])})"
 
 def gen_project(project, inbox_n=0):
-    packet_bytes = PACKET_LIMITS.get(project, PACKET_BYTES)
+    packet_bytes = delivery_limit(project, PACKET_LIMITS)
+    base_bytes = base_packet_budget(packet_bytes)
     for td in TYPEDIRS:   # a scope listed in the dictionary always has its folders
         os.makedirs(os.path.join(ROOT, project, td), exist_ok=True)
     own = collect(project)
@@ -275,20 +246,24 @@ def gen_project(project, inbox_n=0):
     P.append("")
     pk = [r for r in act if in_packet(r) and not r["_superseded"]]
     superseded_n = len([r for r in act if in_packet(r) and r["_superseded"]])
-    groups = [("BLOCKED", [r for r in pk if r.get("status") == "blocked"]),
-              ("OPEN THREADS", [r for r in pk if r.get("type") == "thread" and r.get("status") != "blocked"]),
-              ("DECISIONS", [r for r in pk if r.get("type") == "decision"]),
-              ("FACTS", [r for r in pk if r.get("type") == "fact"])]
+    def is_pin(record):
+        return str(record.get("pinned")).lower() == "true"
 
-    # QUOTA-BASED ASSEMBLY (fix from the 2026-07-28 audit). Before: all records with
-    # full summaries, then lines were popped from the TAIL to fit the byte cap — and
-    # FACTS is the last section, so in the biggest scopes it vanished ENTIRELY (an
-    # entire section silently dropped: zero facts shipped). Now:
-    # (1) summaries are shortened first — 30 short lines beat 5 full ones;
-    # (2) on overflow we drop one record from the LARGEST section, keeping every
-    #     section alive;
-    # (3) the counter is computed AFTER truncation — the old footer overstated
-    #     coverage by an order of magnitude.
+    pins = [r for r in pk if is_pin(r)]
+    ordinary = [r for r in pk if not is_pin(r)]
+    # Every record belongs to exactly one group. Pins are globally first and are
+    # protected from trimming; blocked facts/decisions are not counted twice.
+    groups = [
+        ("PINNED", pins),
+        ("BLOCKED", [r for r in ordinary if r.get("status") == "blocked"]),
+        ("OPEN THREADS", [r for r in ordinary
+                          if r.get("type") == "thread" and r.get("status") != "blocked"]),
+        ("DECISIONS", [r for r in ordinary
+                       if r.get("type") == "decision" and r.get("status") != "blocked"]),
+        ("FACTS", [r for r in ordinary
+                   if r.get("type") == "fact" and r.get("status") != "blocked"]),
+    ]
+
     def _render(keep, sum_len):
         L = []
         for title, group in groups:
@@ -298,54 +273,64 @@ def gen_project(project, inbox_n=0):
             L.append(f"--- {title} ---")
             for r in g:
                 s = r.get("summary") or ""
-                if isinstance(s, str) and len(s) > sum_len:
+                if sum_len == 0:
+                    s = ""
+                elif isinstance(s, str) and len(s) > sum_len:
                     s = s[:sum_len].rstrip() + "…"
                 pin = "📌 " if str(r.get("pinned")).lower() == "true" else ""
                 L.append(f"- {pin}{r.get('title')}" + (f" [{s}]" if s else ""))
             L.append("")
         return L
 
-    keep = {t: len(g) for t, g in groups}
-    chosen = 140
-    for sum_len in (300, 200, 140):        # shorten first, only then start dropping
-        body = _render(keep, sum_len)
-        shipped = sum(keep.values())
-        tail = [f"(Deeper: rg over {DISPLAY_ROOT}/{project}/ or INDEX.md; "
-                f"records beyond this packet: {len(recs) - shipped}"
-                + (f"; superseded hidden: {superseded_n}" if superseded_n else "") + ")",
-                "=== END MEMORY PACKET ==="]
-        if len(("\n".join(P + body + tail) + "\n").encode()) <= packet_bytes:
+    def _assemble(target_bytes):
+        keep = {title: len(group) for title, group in groups}
+        chosen = 0
+        for sum_len in (300, 200, 140, 100, 80, 60, 40, 20, 0):
+            body = _render(keep, sum_len)
+            shipped = sum(keep.values())
+            tail = [f"(Deeper: rg over {DISPLAY_ROOT}/{project}/ or INDEX.md; "
+                    f"eligible records beyond this packet: {len(pk) - shipped}"
+                    + (f"; superseded hidden: {superseded_n}" if superseded_n else "") + ")",
+                    "=== END MEMORY PACKET ==="]
+            out = "\n".join(P + body + tail)
+            if len((out + "\n").encode()) <= target_bytes:
+                return out, keep
             chosen = sum_len
-            break
-    while True:
-        body = _render(keep, chosen)
-        shipped = sum(keep.values())
-        tail = [f"(Deeper: rg over {DISPLAY_ROOT}/{project}/ or INDEX.md; "
-                f"records beyond this packet: {len(recs) - shipped}"
-                + (f"; superseded hidden: {superseded_n}" if superseded_n else "") + ")",
-                "=== END MEMORY PACKET ==="]
-        out = "\n".join(P + body + tail)
-        if len((out + "\n").encode()) <= packet_bytes:
-            break
-        # drop from the largest section, leaving each at least 2 records
-        cand = [(keep[t], t) for t, g in groups if keep.get(t, 0) > 2]
-        if not cand:
-            cand = [(keep[t], t) for t, g in groups if keep.get(t, 0) > 0]
-        if not cand:
-            break
-        keep[max(cand)[1]] -= 1
+        while True:
+            body = _render(keep, chosen)
+            shipped = sum(keep.values())
+            tail = [f"(Deeper: rg over {DISPLAY_ROOT}/{project}/ or INDEX.md; "
+                    f"eligible records beyond this packet: {len(pk) - shipped}"
+                    + (f"; superseded hidden: {superseded_n}" if superseded_n else "") + ")",
+                    "=== END MEMORY PACKET ==="]
+            out = "\n".join(P + body + tail)
+            if len((out + "\n").encode()) <= target_bytes:
+                return out, keep
+            candidates = [(keep[title], title) for title, _ in groups
+                          if title != "PINNED" and keep.get(title, 0) > 2]
+            if not candidates:
+                candidates = [(keep[title], title) for title, _ in groups
+                              if title != "PINNED" and keep.get(title, 0) > 0]
+            if not candidates:
+                return None
+            keep[max(candidates)[1]] -= 1
+
+    assembled = _assemble(base_bytes)
+    if assembled is None:
+        # Preserve pins even when they consume the dynamic reserve. The final
+        # delivery remains capped; delta/recent sections will be omitted.
+        assembled = _assemble(packet_bytes)
+    if assembled is None:
+        raise PacketLimitError(
+            f"scope '{project}': pinned records do not fit within the {packet_bytes}-byte cap"
+        )
+    out, keep = assembled
+    retained = [record for title, group in groups for record in group[:keep.get(title, 0)]]
+    shipped = len(retained)
+    has_facts = any(record.get("type") == "fact" for record in retained)
     os.makedirs(OUT, exist_ok=True)
     _atomic_write(os.path.join(OUT, f"packet-{project}.md"), out + "\n")
-    # coverage statistics for spine-health (2026-07-28): the packet silently starved
-    # for a month because the only number the operator ever saw was computed BEFORE
-    # truncation and wildly overstated coverage
-    try:
-        with open(os.path.join(OUT, ".packet-stats.tsv"), "a") as sf:
-            sf.write(f"{project}\t{len(pk)}\t{shipped}\t"
-                     f"{1 if any(t == 'FACTS' and keep.get(t, 0) for t, _ in groups) else 0}\n")
-    except OSError:
-        pass
-    return len(recs), shipped
+    return len(recs), len(pk), shipped, 1 if has_facts else 0
 
 def gen_journal():
     """Episodic journal (v3.3): derived from the frontmatter of all records, last 30
@@ -384,25 +369,44 @@ def gen_journal():
 
 
 def main():
-    total = 0
     inbox_n = inbox_pending()
     for p in sys.argv[1:]:
         if p not in PROJECTS:   # controlled vocabulary: a typo must not create a junk scope
             sys.exit(f"spine-gen: unknown project '{p}' (not in {os.path.join(CFG, 'projects.txt')})")
-    try:    # statistics are per-run, not cumulative
-        os.makedirs(OUT, exist_ok=True)
-        open(os.path.join(OUT, ".packet-stats.tsv"), "w").close()
+    requested = set(sys.argv[1:] or PROJECTS)
+    total = 0
+    stats = []
+    # A targeted invocation still refreshes every configured packet so health
+    # receives one complete, internally consistent snapshot.
+    try:
+        for p in PROJECTS:
+            n, eligible, shipped, has_facts = gen_project(p, inbox_n)
+            stats.append(f"{p}\t{eligible}\t{shipped}\t{has_facts}")
+            if p in requested:
+                print(f"{p}: records {n}, in packet {shipped}")
+                total += n
+    except PacketLimitError as exc:
+        _invalidate_packet_stats()
+        print(f"spine-gen: {exc}", file=sys.stderr)
+        return 1
     except OSError:
-        pass
-    for p in (sys.argv[1:] or PROJECTS):
-        n, k = gen_project(p, inbox_n)
-        print(f"{p}: records {n}, in packet {k}")
-        total += n
+        _invalidate_packet_stats()
+        print("spine-gen: cannot publish generated packet or index", file=sys.stderr)
+        return 1
+
+    try:
+        os.makedirs(OUT, exist_ok=True)
+        _atomic_write(os.path.join(OUT, ".packet-stats.tsv"), "\n".join(stats) + "\n")
+    except OSError:
+        _invalidate_packet_stats()
+        print("spine-gen: cannot publish packet statistics", file=sys.stderr)
+        return 1
     try:
         gen_journal()
     except Exception as e:   # the journal is a derived bonus and never blocks INDEX/packet
         print(f"WARN: journal generation failed: {e}")
     print(f"OK spine-gen: {total} record(s)")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

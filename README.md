@@ -46,7 +46,7 @@ git switch --detach <reviewed-tag>
 
 Default install creates:
 
-- `~/AgentMemory` — the memory vault (a local git repo; nothing is pushed anywhere).
+- `~/AgentMemory` — the memory vault (a local git repo; nothing is pushed to a network or cloud remote).
 - `~/dev/memory-spine/bin` — the CLI tools.
 - Example scopes: `personal`, `work`, `ai-infra`, plus an `inbox` for unsorted topics.
 
@@ -57,6 +57,12 @@ Custom scopes and agent names:
   --projects "personal,work,research" \
   --agents "claude-code,codex,cursor,user"
 ```
+
+For a tagged release archive, download the archive and `SHA256SUMS` into the
+same directory, verify it before extraction with
+`shasum -a 256 -c SHA256SUMS` on macOS or `sha256sum -c SHA256SUMS` on Linux,
+then run the preview/apply flow above from the
+verified archive.
 
 ## Daily use
 
@@ -82,13 +88,13 @@ spine-health && spine-selftest && spine-approve --log
 
 - **Types:** `decision` · `fact` · `thread` (open coordination) · `artifact` (pointer, not content).
 - **Confidence:** `verified` / `reported` / `candidate` / `untrusted`. External content is always `untrusted` and never auto-injected.
-- **Pins:** environment facts (`--pin`) always ride at the top of the packet and never fall out.
+- **Pins:** Pinned records are emitted before other packet records and are never dropped; generation fails if all pins cannot fit within the configured cap.
 - **Inbox:** topics that fit no scope land in `inbox` — only the owner triages (new scope / merge / archive). Delete does not exist.
 - **Supersede:** correcting knowledge = a new record with `supersedes:`, not an edit. Committed history remains available unless history is explicitly rewritten.
 
 ## The access gate
 
-A third-party desktop app once picked up a global agent profile during onboarding and quietly read the memory packet. That incident became a feature:
+The access gate addresses a general threat model: an integrated runtime may invoke Spine tools even when the owner did not intend that caller to receive memory content.
 
 - **Default-deny for identified callers** by process-ancestry chain — callers absent from the configured allowlist are refused; configured notifications can alert the owner.
 - The allowlist is intended to be owner-managed through `spine-approve`; filesystem permissions remain the underlying enforcement boundary.
@@ -99,8 +105,8 @@ A third-party desktop app once picked up a global agent profile during onboardin
 ## Reliability
 
 - `spine-selftest` — an 18-test suite covering write mechanics, inline secret refusal, the dedup gate, supersede semantics, promotion review semantics and packet generation. Access-gate behavior is tested separately.
-- **Packet limits:** Optional per-scope packet caps are read from config/packet-limits.conf; unlisted scopes keep the 14,000-byte default, and configured values below 4,000 bytes are clamped. Copy config/packet-limits.conf.example to that path to opt in.
-- `spine-health` — For scopes with at least 20 eligible records, packet starvation requires both coverage below 35% and fewer than 55 shipped records; shipping zero facts always alerts. It also detects sync gaps and backup staleness.
+- **Packet limits:** Optional per-scope packet caps are read from config/packet-limits.conf; unlisted scopes keep the 14,000-byte default, and configured values below 4,000 bytes are clamped. Copy config/packet-limits.conf.example to that path to opt in. The configured cap bounds the complete spine-packet output, including any delta or recent-record section. Generated base packets normally reserve bounded room for those dynamic sections; protected pins may consume that reserve.
+- `spine-health` — Only scopes with at least 20 eligible records are evaluated; within that set, packet starvation requires both coverage below 35% and fewer than 55 shipped records, while zero shipped facts alerts. Missing, stale, malformed, or incomplete all-scope statistics alert instead of failing open.
 - A **dead-letter queue** for notifications: undeliverable alerts remain visible locally and can be retried by the sync cycle.
 - Atomic writes, locks with TTL, log rotation, fail-closed preflight before any commit.
 
@@ -154,7 +160,7 @@ retry logic is designed to prefer a duplicate over silently discarding a claimed
 ## Repository layout
 
 - `bin/` — CLI tools (bash + Python standard library; external requirements are listed below).
-- `lib/` — the access gate (`spine_gate.py`).
+- `lib/` — the access gate (`spine_gate.py`), shared packet limits (`spine_packet_limits.py`), packet health (`spine_packet_health.py`), and platform paths.
 - `config/` — scope dictionary, agent allowlist, notify/backup examples.
 - `hooks/` — git hooks for the vault (pre-commit secret scan).
 - `templates/AgentMemory/` — initial vault skeleton.

@@ -109,7 +109,7 @@ def main():
     if not a.query and not a.scope and not a.since:
         ap.error("provide a query, or at least --scope / --since")
 
-    # ACCESS GATE (third-party desktop agent incident, 2026-07-28):
+    # ACCESS GATE: identified callers must satisfy the owner-managed policy.
     # memory search is available only to approved callers. A broken/missing
     # gate is FAIL-CLOSED; SPINE_NO_GATE=1 is the explicit opt-out for
     # deliberately gateless installs (one stderr warning, then proceed).

@@ -32,6 +32,7 @@ HOME = os.path.expanduser("~")
 TOOLS = os.environ.get("SPINE_TOOLS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(TOOLS, "lib"))
 from spine_paths import default_log_root
+from spine_packet_limits import delivery_limit, load_limits
 
 
 def _config_dir():
@@ -48,12 +49,31 @@ def _config_dir():
 
 
 ROOT = os.path.abspath(os.path.expanduser(os.environ.get("SPINE_ROOT", "~/AgentMemory")))
-MAP = os.path.join(_config_dir(), "cwd-map.tsv")
+CFG = _config_dir()
+MAP = os.path.join(CFG, "cwd-map.tsv")
 PACKETS = f"{ROOT}/_index"
 MARKERS = os.path.join(os.environ.get("SPINE_LOG_DIR", str(default_log_root())), "markers")
 TYPEDIRS = ["decisions", "facts", "threads", "artifacts"]
 DELTA_MAX = 8          # records per section
 DELTA_BYTES = 1500     # hard byte budget for the delta
+
+
+def _limit_warning(message):
+    sys.stderr.write(f"spine-packet: {message}\n")
+
+
+def _load_projects():
+    try:
+        with open(os.path.join(CFG, "projects.txt"), encoding="utf-8") as handle:
+            return [line.strip() for line in handle
+                    if line.strip() and not line.lstrip().startswith("#")]
+    except OSError:
+        _limit_warning("projects.txt unavailable; delivery disabled")
+        return None
+
+
+PROJECTS = _load_projects()
+PACKET_LIMITS = load_limits(CFG, PROJECTS or [], _limit_warning)
 
 
 def resolve(cwd):
@@ -256,8 +276,11 @@ def main():
     if resolve_only:
         print(project)   # scope name only, no content — no gate needed
         return 0
+    if PROJECTS is None or project not in PROJECTS:
+        sys.stderr.write("spine-packet: cannot validate the configured delivery cap; refusing\n")
+        return 0
 
-    # ACCESS GATE (third-party desktop agent incident, 2026-07-28):
+    # ACCESS GATE: identified callers must satisfy the owner-managed policy.
     # memory content goes only to approved callers. A broken/missing gate is
     # FAIL-CLOSED; SPINE_NO_GATE=1 is the explicit opt-out for deliberately
     # gateless installs (one stderr warning, then proceed).
@@ -283,14 +306,21 @@ def main():
         sys.stderr.write(f"spine-packet: no packet for '{project}' (run spine-gen)\n")
         return 0
     try:
-        sys.stdout.write(open(pk, encoding="utf-8", errors="replace").read())
+        output = open(pk, encoding="utf-8", errors="replace").read()
     except OSError as e:
         sys.stderr.write(f"spine-packet: cannot read {pk}: {e}\n")
         return 0
+    packet_bytes = delivery_limit(project, PACKET_LIMITS)
+    if len(output.encode()) > packet_bytes:
+        sys.stderr.write(
+            f"spine-packet: base packet exceeds the {packet_bytes}-byte delivery cap; run spine-gen\n"
+        )
+        return 0
 
+    marker = None
+    marker_value = None
     if not no_delta:
-        # per-agent marker (v3.3 review: a shared marker "ate" the delta for the
-        # second agent); the old shared format is read as a migration fallback
+        # Per-agent marker; the old shared format remains a migration fallback.
         marker = os.path.join(MARKERS, f"last-fire-{project}-{agent}")
         legacy = os.path.join(MARKERS, f"last-fire-{project}")
         prev = 0.0
@@ -300,29 +330,51 @@ def main():
                 break
             except (OSError, ValueError):
                 continue
-        now_ts = time.time()   # captured BEFORE the scan: a record written during the scan is not lost
+        now_ts = time.time()   # captured before the scan so a concurrent write is not lost
+        advance_marker = prev <= 0
         if prev > 0:
             try:
-                print(delta_section(project, prev), end="")
-                print()
+                delta = delta_section(project, prev)
+                if delta:
+                    candidate = output + delta + "\n"
+                    if len(candidate.encode()) <= packet_bytes:
+                        output = candidate
+                        advance_marker = True
+                    else:
+                        sys.stderr.write(
+                            "spine-packet: delta omitted because the configured delivery cap would be exceeded\n"
+                        )
+                else:
+                    advance_marker = True
             except Exception as e:   # the delta must never break packet injection
                 sys.stderr.write(f"spine-packet: delta failure: {e}\n")
-        try:
-            os.makedirs(MARKERS, exist_ok=True)
-            tmp = marker + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(str(now_ts))
-            os.replace(tmp, marker)   # atomic: a concurrent reader never sees a truncated file
-        except OSError:
-            pass
+        if advance_marker:
+            marker_value = now_ts
 
     if recent_n > 0:
         try:
             sec = recent_section(project, recent_n)
             if sec:
-                print(sec)
+                candidate = output + sec + "\n"
+                if len(candidate.encode()) <= packet_bytes:
+                    output = candidate
+                else:
+                    sys.stderr.write(
+                        "spine-packet: recent section omitted because the configured delivery cap would be exceeded\n"
+                    )
         except Exception as e:   # must never break packet injection
             sys.stderr.write(f"spine-packet: recent failure: {e}\n")
+
+    sys.stdout.write(output)
+    if marker is not None and marker_value is not None:
+        try:
+            os.makedirs(MARKERS, exist_ok=True)
+            tmp = marker + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(str(marker_value))
+            os.replace(tmp, marker)   # atomic: a concurrent reader never sees a truncated file
+        except OSError:
+            pass
     return 0
 
 

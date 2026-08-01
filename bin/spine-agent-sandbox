@@ -1,13 +1,10 @@
 #!/bin/bash
 # spine-agent-sandbox — an isolated home for a third-party agent app.
 #
-# LESSON FROM A REAL INCIDENT (2026-07-28): a third-party desktop app picked up
-# a global agent profile during onboarding and read the memory packet.
-# "Connect a model" inside someone else's app = handing it your ENTIRE
-# Codex/Claude profile (projects, plugins, MCP connectors, sandbox grants —
-# and, through them, memory). An isolated home breaks that inheritance: the
-# app gets a clean profile with no plugins, no connectors and no access to the
-# memory vault.
+# Connecting a model inside another app can inherit a broader agent profile
+# (projects, plugins, MCP connectors, sandbox grants, and memory access). An
+# isolated home breaks that inheritance: the app gets a clean profile with no
+# plugins, no connectors, and no access to the memory vault.
 #
 # Usage:
 #   spine-agent-sandbox <app-name>      # create the home + show how to launch

@@ -1,15 +1,8 @@
 """spine_gate — process-ancestry access control for the memory vault.
 
-Origin: a third-party desktop app picked up a global agent profile during
-onboarding and read the memory packet (real incident, 2026-07-28). The app
-inherited a full agent-runtime profile (an ACP runtime, not "just an LLM") and
-with it the spine-* tools; it ran spine-packet and shipped the packet content
-into its own model channel. The owner had agreed to "connect a model" — never
-to expose memory.
-
 Threat model, honestly:
   + catches: agent runtimes and apps that RUN spine-* tools
-    (exactly the incident above; this is the realistic vector for LLM agents)
+    without being present in the owner-managed allowlist
   - does NOT catch: an arbitrary `cat` of vault files by any user process —
     the vault remains a plain directory. That is why rule #1 (never store
     secret VALUES in memory) stays the primary defense, not this gate.

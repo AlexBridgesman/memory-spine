@@ -196,7 +196,11 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
 
     proc, health_log = run_health(b"alpha\t200\t54\t1\nbeta\t20\t20\t1\n")
     require(proc.returncode == 1, "isolated starving health run did not alert")
-    require("packet starving: alpha 27%" in health_log, "starvation did not reach spine-health alert log")
+    require(
+        "packet starving: alpha 27%" in health_log,
+        "starvation did not reach spine-health alert log "
+        f"(log={health_log!r}, stderr={proc.stderr!r}, stdout={proc.stdout!r})",
+    )
 
     proc, health_log = run_health(b"alpha\t200\t55\t1\nbeta\t20\t20\t1\n")
     require(proc.returncode == 1, "isolated health fixture unexpectedly had no baseline alerts")

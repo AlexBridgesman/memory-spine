@@ -27,6 +27,23 @@ jobs:
         run: scripts/build-release.sh "$RELEASE_REF" dist
       - name: Verify manifest
         run: cd dist && sha256sum --check SHA256SUMS
+      - name: Test extracted archive
+        run: |
+          set -euo pipefail
+          archive="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          [ -n "$archive" ]
+          mkdir "$RUNNER_TEMP/release-extract"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/release-extract"
+          root="$(find "$RUNNER_TEMP/release-extract" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          cd "$root"
+          tests/test-paths.sh
+          tests/test-packet-limits.sh
+          tests/test-packet-delivery.sh
+          tests/test-hook-delivery.sh
+          python3 tests/test-packet-health.py
+          python3 tests/test-recall-synonyms.py
+          python3 tests/test-website.py
+          python3 tests/test-supply-chain.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: memory-spine-release-integrity

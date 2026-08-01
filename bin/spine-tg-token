@@ -34,10 +34,11 @@
 set -u
 BIN="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
+. "$TOOLS/lib/spine_paths.sh"
 CONF="${SPINE_NOTIFY_CONF:-$TOOLS/config/notify.conf}"
 KC_SVC="memory-spine/TELEGRAM_BOT_TOKEN"   # generic service name; matches notify.conf.example
 KC_ACCT="${USER:-memory-spine}"
-LOGDIR="$HOME/Library/Logs/AgentMemory"
+LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 LOG="$LOGDIR/notify.log"
 mkdir -p "$LOGDIR"
 log() { echo "$(date '+%F %T') tg-token: $*" >> "$LOG"; }
@@ -75,7 +76,9 @@ fetch_token() {
   # notification path (see header). Runs via /bin/sh so token_cmd may contain
   # quotes, pipes, or env-var prefixes.
   [ -n "$TOKEN_CMD" ] || return 1
-  /usr/bin/python3 -c '
+  PYTHON="$(spine_resolve_python 2>/dev/null || true)"
+  [ -n "$PYTHON" ] || return 1
+  "$PYTHON" -c '
 import subprocess, sys
 try:
     r = subprocess.run(["/bin/sh", "-c", sys.argv[1]], capture_output=True, text=True, timeout=20)

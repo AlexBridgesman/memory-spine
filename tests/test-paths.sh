@@ -7,6 +7,8 @@ trap 'rm -rf "$TMP"' EXIT INT TERM HUP
 mkdir -p "$TMP/fakebin" "$TMP/home"
 printf '#!/bin/sh\necho Linux\n' > "$TMP/fakebin/uname"
 chmod +x "$TMP/fakebin/uname"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/fakebin/python3"
+chmod +x "$TMP/fakebin/python3"
 
 EXPECTED="$TMP/xdg/AgentMemory"
 ACTUAL=$(HOME="$TMP/home" XDG_DATA_HOME="$TMP/xdg" PATH="$TMP/fakebin:$PATH" bash -c \
@@ -15,6 +17,18 @@ ACTUAL=$(HOME="$TMP/home" XDG_DATA_HOME="$TMP/xdg" PATH="$TMP/fakebin:$PATH" bas
   echo "FAIL: shell Linux paths: $ACTUAL" >&2
   exit 1
 }
+
+RESOLVED=$(HOME="$TMP/home" PATH="$TMP/fakebin:/bin:/usr/bin" bash -c \
+  '. "$1/lib/spine_paths.sh"; spine_resolve_python' _ "$REPO")
+[ "$RESOLVED" = "$TMP/fakebin/python3" ] || {
+  echo "FAIL: PATH-only Python resolver: $RESOLVED" >&2
+  exit 1
+}
+if HOME="$TMP/home" PATH="$TMP/fakebin:/bin:/usr/bin" SPINE_PYTHON="$TMP/missing-python" \
+  bash -c '. "$1/lib/spine_paths.sh"; spine_resolve_python' _ "$REPO" >/dev/null 2>&1; then
+  echo "FAIL: invalid explicit SPINE_PYTHON silently fell back" >&2
+  exit 1
+fi
 
 HOME="$TMP/home" XDG_DATA_HOME="$TMP/xdg" python3 - "$REPO" "$EXPECTED" <<'PY'
 import sys

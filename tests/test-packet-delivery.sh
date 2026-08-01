@@ -13,6 +13,7 @@ cp "$REPO/bin/spine-gen" "$TOOLS/bin/spine-gen"
 cp "$REPO/bin/spine-packet" "$TOOLS/bin/spine-packet"
 cp "$REPO/lib/spine_paths.py" "$TOOLS/lib/spine_paths.py"
 [ ! -f "$REPO/lib/spine_packet_limits.py" ] || cp "$REPO/lib/spine_packet_limits.py" "$TOOLS/lib/spine_packet_limits.py"
+[ ! -f "$REPO/lib/spine_packet_health.py" ] || cp "$REPO/lib/spine_packet_health.py" "$TOOLS/lib/spine_packet_health.py"
 chmod +x "$TOOLS/bin/spine-gen" "$TOOLS/bin/spine-packet"
 printf 'alpha\n' > "$TOOLS/config/projects.txt"
 printf 'user\n' > "$TOOLS/config/agents.txt"
@@ -54,6 +55,16 @@ initial_bytes=$(wc -c < "$TMP/initial.out" | tr -d ' ')
 [ "$initial_bytes" -le 4000 ] || fail "initial delivered packet exceeded configured 4,000-byte cap"
 marker="$LOGS/markers/last-fire-alpha-contract"
 [ -f "$marker" ] || fail "initial delivery did not establish the per-agent marker"
+
+# Hook delivery is two-phase: packet rendering stages a cursor, and only the
+# caller that successfully writes to the real session sink may publish it.
+pending_marker="$LOGS/markers/.pending-contract"
+initial_marker=$(cat "$marker")
+run_packet --defer-marker "$pending_marker" > "$TMP/deferred.out" 2> "$TMP/deferred.err"
+[ -f "$pending_marker" ] || fail "deferred delivery did not stage its cursor"
+[ "$(cat "$marker")" = "$initial_marker" ] || fail "deferred delivery advanced the live cursor early"
+mv "$pending_marker" "$marker"
+[ "$(cat "$marker")" != "$initial_marker" ] || fail "published deferred cursor did not advance"
 
 cat > "$VAULT/alpha/facts/delta.md" <<'EOF'
 ---

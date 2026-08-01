@@ -53,6 +53,7 @@ jobs:
           tests/test-cross-agent-e2e.sh
           tests/test-packet-limits.sh
           tests/test-packet-delivery.sh
+          tests/test-hook-delivery.sh
           python3 tests/test-packet-health.py
           python3 tests/test-recall-synonyms.py
           benchmarks/recall/run.py

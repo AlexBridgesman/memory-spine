@@ -319,9 +319,15 @@ find "$MEMORY_ROOT" -name '*.md' -not -path '*/.git/*' -print0 | xargs -0 "$TOOL
 # rides journal/history like everything else) + a machine-readable
 # PROVENANCE.md at the vault root. No network, no phone-home: provenance
 # lives with the OWNER of the data, not with us.
-SRC_COMMIT="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-SRC_TREE="$(git -C "$SCRIPT_DIR" rev-parse 'HEAD^{tree}' 2>/dev/null || echo unknown)"
-SRC_VERSION="$(git -C "$SCRIPT_DIR" describe --tags --always 2>/dev/null || echo unknown)"
+release_metadata() {
+  sed -n "s/^$1=//p" "$SCRIPT_DIR/RELEASE-METADATA" 2>/dev/null | head -1
+}
+SRC_COMMIT="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || release_metadata commit || true)"
+SRC_TREE="$(git -C "$SCRIPT_DIR" rev-parse 'HEAD^{tree}' 2>/dev/null || release_metadata tree || true)"
+SRC_VERSION="$(git -C "$SCRIPT_DIR" describe --tags --always 2>/dev/null || release_metadata version || true)"
+printf '%s' "$SRC_COMMIT" | grep -Eq '^[0-9a-f]{40,64}$' || SRC_COMMIT=unknown
+printf '%s' "$SRC_TREE" | grep -Eq '^[0-9a-f]{40,64}$' || SRC_TREE=unknown
+printf '%s' "$SRC_VERSION" | grep -Eq '^[A-Za-z0-9._-]+$' || SRC_VERSION=unknown
 if [ -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null || true)" ]; then
   SRC_DIRTY=true
 else
@@ -354,8 +360,9 @@ PROV
 fi
 
 # Provenance and the genesis record are generated after the first scan, so scan
-# the complete final Markdown set before any commit.
+# and regenerate the complete final state before any commit.
 find "$MEMORY_ROOT" -name '*.md' -not -path '*/.git/*' -print0 | xargs -0 "$TOOLS_DIR/bin/spine-secrets-lint"
+"$TOOLS_DIR/bin/spine-gen" >/dev/null
 
 
 if [ "$GIT_INIT" = "1" ]; then

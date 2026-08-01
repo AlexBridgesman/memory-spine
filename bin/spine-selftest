@@ -19,7 +19,8 @@ ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 . "$TOOLS/lib/spine_paths.sh"
 REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$(spine_default_remote_root)}"
 BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
-PY="${SPINE_PYTHON:-$(command -v python3 || echo /usr/bin/python3)}"
+PY="$(spine_resolve_python 2>/dev/null || true)"
+[ -n "$PY" ] || { echo "SELFTEST FAIL: python3 unavailable" >&2; exit 1; }
 GITLEAKS="${SPINE_GITLEAKS:-$(command -v gitleaks || echo /opt/homebrew/bin/gitleaks)}"
 GIT="${SPINE_GIT:-}"
 if [ -z "$GIT" ]; then

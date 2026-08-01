@@ -25,3 +25,21 @@ spine_default_ledger() {
     *) printf '%s/ledger.tsv\n' "$(spine_default_state_root)" ;;
   esac
 }
+
+spine_resolve_python() {
+  local configured="${SPINE_PYTHON:-}" candidate
+  if [ -n "$configured" ]; then
+    case "$configured" in
+      */*) [ -x "$configured" ] && { printf '%s\n' "$configured"; return 0; } ;;
+      *) candidate="$(command -v "$configured" 2>/dev/null || true)"
+         [ -n "$candidate" ] && { printf '%s\n' "$candidate"; return 0; } ;;
+    esac
+    return 1
+  fi
+  candidate="$(command -v python3 2>/dev/null || true)"
+  [ -n "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+  done
+  return 1
+}

@@ -28,7 +28,7 @@ if [ -z "$GIT" ]; then
   done
   [ -z "$GIT" ] && GIT="$(command -v git 2>/dev/null || echo git)"
 fi
-PYTHON="${SPINE_PYTHON:-$(command -v python3 2>/dev/null || true)}"
+PYTHON="$(spine_resolve_python 2>/dev/null || true)"
 if [ -z "$PYTHON" ]; then
   PYTHON=false
   ALERTS="$ALERTS\n- python3 unavailable -- packet and status health checks are incomplete"
@@ -220,6 +220,7 @@ else
   case "$stats_mtime" in ''|*[!0-9]*) packet_stats_ok=0 ;;
     *)
       packet_input_newer=0
+      [ "$stats_mtime" -gt $((now + 300)) ] && packet_stats_ok=0
       for input in "$PDICT" "$ROOT/config/packet-limits.conf" "$TOOLS_DIR/config/packet-limits.conf"; do
         [ -f "$input" ] || continue
         [ "$input" -nt "$PSTATS" ] && packet_input_newer=1

@@ -8,6 +8,7 @@ set -u
 BINDIR="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BINDIR")}"
 . "$TOOLS/lib/spine_paths.sh"
+PYTHON="$(spine_resolve_python 2>/dev/null || true)"
 SPINE_ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 PACKETS="$SPINE_ROOT/_index"
 LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
@@ -19,9 +20,13 @@ mkdir -p "$LOGDIR/markers" 2>/dev/null
 
 # source from the hook input (stdin JSON): startup|resume|compact|clear
 # (anti-amnesia handling for compaction, 2026-07-22)
-SRC=$(head -c 8192 2>/dev/null | /usr/bin/python3 -c 'import sys,json
+if [ -n "$PYTHON" ]; then
+  SRC=$(head -c 8192 2>/dev/null | "$PYTHON" -c 'import sys,json
 try: print(json.load(sys.stdin).get("source",""))
 except Exception: print("")' 2>/dev/null)
+else
+  SRC=""
+fi
 
 # heartbeat: the hook is alive (for health checks)
 date +%s > "$LOGDIR/.hook-heartbeat" 2>/dev/null
@@ -70,11 +75,26 @@ fi
 # NOT an array: an empty "${arr[@]}" under set -u crashes bash 3.2 (the system /bin/bash)
 EXTRA=""
 [ "$SRC" = "compact" ] && EXTRA="--recent 10"
-if "$BINDIR/spine-packet" --project "$PROJECT" --agent claude-code $EXTRA 2>>"$HOOKLOG"; then
-  echo "$(date '+%F %T') fire${SRC:+ ($SRC)}: $PROJECT <- $CWD" >> "$HOOKLOG"
-  date +%s > "$LOGDIR/.hook-last-fire" 2>/dev/null   # health: "the packet was actually delivered"
+OUT="$LOGDIR/.hook-output-$$"
+PENDING="$LOGDIR/markers/.last-fire-$PROJECT-claude-code.pending.$$"
+LIVE_MARKER="$LOGDIR/markers/last-fire-$PROJECT-claude-code"
+DELIVERED=0
+if "$BINDIR/spine-packet" --project "$PROJECT" --agent claude-code \
+    --defer-marker "$PENDING" $EXTRA \
+    >"$OUT" 2>>"$HOOKLOG"; then
+  if [ -s "$OUT" ] && cat "$OUT"; then
+    [ ! -f "$PENDING" ] || mv "$PENDING" "$LIVE_MARKER" 2>>"$HOOKLOG"
+    DELIVERED=1
+    echo "$(date '+%F %T') fire${SRC:+ ($SRC)}: $PROJECT <- $CWD" >> "$HOOKLOG"
+    date +%s > "$LOGDIR/.hook-last-fire" 2>/dev/null
+  else
+    echo "$(date '+%F %T') no-op (packet refused or empty): $PROJECT" >> "$HOOKLOG"
+  fi
+else
+  echo "$(date '+%F %T') CRASH spine-packet delivery: $PROJECT" >> "$HOOKLOG"
 fi
-if [ "$SRC" = "compact" ]; then
+rm -f "$OUT" "$PENDING"
+if [ "$DELIVERED" = 1 ] && [ "$SRC" = "compact" ]; then
   # recovery instructions — part of the context immediately after compaction
   echo ""
   echo "WARNING: COMPACTION JUST HAPPENED. Above: the packet and the latest memory records. Before continuing:"

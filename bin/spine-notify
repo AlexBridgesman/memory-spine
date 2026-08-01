@@ -65,7 +65,9 @@ if [ "$MODE" != "tg" ]; then
   # argv passing: the text is never embedded into AppleScript source (quotes
   # and emoji stay safe); truncate by CHARACTERS -- a byte-level `head -c` once
   # cut a UTF-8 character in half and the banner rendered as mojibake.
-  SHORT=$(printf '%s' "$MSG" | /usr/bin/python3 -c 'import sys; print(sys.stdin.read()[:200], end="")')
+  PYTHON="$(spine_resolve_python 2>/dev/null || true)"
+  [ -n "$PYTHON" ] || { log "local notification failed: python3 unavailable"; exit 1; }
+  SHORT=$(printf '%s' "$MSG" | "$PYTHON" -c 'import sys; print(sys.stdin.read()[:200], end="")')
   /usr/bin/osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "Memory Spine"' -- "$SHORT" 2>/dev/null
 fi
 

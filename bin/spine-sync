@@ -31,13 +31,7 @@ if [ -z "$GIT" ]; then
   done
   [ -z "$GIT" ] && GIT="$(command -v git 2>/dev/null || echo git)"
 fi
-PYTHON="${SPINE_PYTHON:-}"
-if [ -z "$PYTHON" ]; then
-  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
-    [ -x "$candidate" ] && { PYTHON="$candidate"; break; }
-  done
-  [ -z "$PYTHON" ] && PYTHON="$(command -v python3 2>/dev/null || true)"
-fi
+PYTHON="$(spine_resolve_python 2>/dev/null || true)"
 GITLEAKS="${SPINE_GITLEAKS:-}"
 if [ -z "$GITLEAKS" ]; then
   for candidate in /opt/homebrew/bin/gitleaks /usr/local/bin/gitleaks; do

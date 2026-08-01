@@ -6,6 +6,7 @@ set -u
 BINDIR="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BINDIR")}"
 . "$TOOLS/lib/spine_paths.sh"
+PYTHON="$(spine_resolve_python 2>/dev/null || true)"
 LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 MARKER="$LOGDIR/markers/session-$PPID"
 INBOX_MARKER="$LOGDIR/markers/inbox-nudge-$PPID"
@@ -37,6 +38,7 @@ fi
 
 if [ -n "$MSG" ]; then
   # JSON-safe (review 2026-07-04: a raw printf would break on the first quote in the text)
-  printf '%s' "$MSG" | /usr/bin/python3 -c 'import json,sys; print(json.dumps({"systemMessage": sys.stdin.read()}, ensure_ascii=False))'
+  [ -n "$PYTHON" ] || exit 0
+  printf '%s' "$MSG" | "$PYTHON" -c 'import json,sys; print(json.dumps({"systemMessage": sys.stdin.read()}, ensure_ascii=False))'
 fi
 exit 0

@@ -10,6 +10,8 @@ ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 BIN="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
 . "$TOOLS/lib/spine_paths.sh"
+PYTHON="$(spine_resolve_python 2>/dev/null || true)"
+[ -n "$PYTHON" ] || { echo "spine-maintain: python3 unavailable" >&2; exit 1; }
 LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 mkdir -p "$LOGDIR"
 REPORT="$LOGDIR/maintain-$(date +%F).log"
@@ -61,7 +63,7 @@ say "=== spine-maintain (mechanical) $(date '+%F %T') ==="
 "$BIN/spine-gen" >> "$REPORT" 2>&1 || problem "spine-gen failed"
 
 # 2) broken wikilinks + orphans (a record without a single [[link]])
-/usr/bin/python3 - "$ROOT" >> "$REPORT" 2>&1 << 'PYEOF'
+"$PYTHON" - "$ROOT" >> "$REPORT" 2>&1 << 'PYEOF'
 import os, re, sys
 from collections import defaultdict
 root = sys.argv[1]
@@ -116,7 +118,7 @@ say "suspect-stale (>21 d, active/blocked): $STALE"
 # candidates for a re-check (a stale "fact" is worse than a missing one);
 # report only
 say "--- facts >90 d (by created, not mtime) for re-verification ---"
-/usr/bin/python3 - "$ROOT" >> "$REPORT" 2>&1 << 'RVEOF'
+"$PYTHON" - "$ROOT" >> "$REPORT" 2>&1 << 'RVEOF'
 import os, re, sys, datetime
 root = sys.argv[1]
 cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)).strftime("%Y-%m-%d")
@@ -181,7 +183,7 @@ fsck_repo "$TOOLS_BARE" "$([ -n "${SPINE_TOOLS_BARE:-}" ] && echo 1 || echo 0)" 
 
 # 6) artifact file:// links must exist (links onto an offline external backup
 # volume are skipped, not flagged)
-/usr/bin/python3 - "$ROOT" "$BACKUP_MARKER" "$VOLPREFIX" >> "$REPORT" 2>&1 << 'PYEOF'
+"$PYTHON" - "$ROOT" "$BACKUP_MARKER" "$VOLPREFIX" >> "$REPORT" 2>&1 << 'PYEOF'
 import os, re, sys
 from urllib.parse import unquote
 root = sys.argv[1]
@@ -239,7 +241,7 @@ fi
 # config/promotion-delegates.tsv (added only by the owner; format:
 # title-regex<TAB>target-confidence<TAB>min-age-days).
 say "--- delegate promotions ---"
-/usr/bin/python3 - "$ROOT" "$TOOLS" "${MAINTAIN_AGENT:-claude-code}" >> "$REPORT" 2>&1 << 'DLEOF'
+"$PYTHON" - "$ROOT" "$TOOLS" "${MAINTAIN_AGENT:-claude-code}" >> "$REPORT" 2>&1 << 'DLEOF'
 import os, re, sys, glob, subprocess, datetime
 root, tools, agent = sys.argv[1], sys.argv[2], sys.argv[3]
 rules = []

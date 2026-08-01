@@ -242,8 +242,9 @@ OVER_VAULT="$TMP/overflow-vault"
 mkdir -p "$OVER_TOOLS/bin" "$OVER_TOOLS/lib" "$OVER_TOOLS/config" \
   "$OVER_VAULT/_index" "$OVER_VAULT/overflow/facts"
 cp "$REPO/bin/spine-gen" "$OVER_TOOLS/bin/spine-gen"
+cp "$REPO/bin/spine-packet" "$OVER_TOOLS/bin/spine-packet"
 cp "$REPO/lib/"*.py "$OVER_TOOLS/lib/"
-chmod +x "$OVER_TOOLS/bin/spine-gen"
+chmod +x "$OVER_TOOLS/bin/spine-gen" "$OVER_TOOLS/bin/spine-packet"
 printf 'overflow\n' > "$OVER_TOOLS/config/projects.txt"
 printf 'user\n' > "$OVER_TOOLS/config/agents.txt"
 printf 'overflow=4000\n' > "$OVER_TOOLS/config/packet-limits.conf"
@@ -254,7 +255,7 @@ while [ "$i" -le 100 ]; do
 type: fact
 title: Overflow protected pin number $i with a deliberately long stable title
 summary: This pin must not be silently dropped by the configured packet cap.
-status: active
+status: blocked
 sensitivity: normal
 confidence: verified
 pinned: true
@@ -266,6 +267,8 @@ EOF
   if [ "$i" -eq 1 ]; then
     SPINE_ROOT="$OVER_VAULT" SPINE_TOOLS_DIR="$OVER_TOOLS" "$OVER_TOOLS/bin/spine-gen" >/dev/null
     [ -f "$OVER_VAULT/_index/.packet-stats.tsv" ] || fail "good generation did not publish statistics"
+    grep -Fq '📌 [BLOCKED] Overflow protected pin number 1' "$OVER_VAULT/_index/packet-overflow.md" \
+      || fail "blocked pin lost its blocked state in packet rendering"
     cp "$OVER_VAULT/_index/packet-overflow.md" "$TMP/good-overflow-packet.md"
   fi
   i=$((i + 1))
@@ -282,5 +285,78 @@ cmp -s "$TMP/good-overflow-packet.md" "$OVER_VAULT/_index/packet-overflow.md" \
   || fail "pin overflow replaced the previous complete packet"
 [ ! -e "$OVER_VAULT/_index/.packet-stats.tsv" ] \
   || fail "failed generation left a health snapshot that could appear current"
+set +e
+SPINE_ROOT="$OVER_VAULT" SPINE_TOOLS_DIR="$OVER_TOOLS" SPINE_NO_GATE=1 \
+  "$OVER_TOOLS/bin/spine-packet" --project overflow --agent contract \
+  >"$TMP/stale-overflow-packet.out" 2>"$TMP/stale-overflow-packet.err"
+stale_packet_rc=$?
+set -e
+[ "$stale_packet_rc" -ne 0 ] || fail "failed generation left the old packet deliverable"
+[ ! -s "$TMP/stale-overflow-packet.out" ] || fail "failed generation served stale pin data"
+grep -Fq 'packet snapshot unavailable' "$TMP/stale-overflow-packet.err" \
+  || fail "stale packet refusal lacked an actionable diagnostic"
+
+# An unpromoted replacement must not hide the promoted record it supersedes.
+SUPER_TOOLS="$TMP/supersede-tools"
+SUPER_VAULT="$TMP/supersede-vault"
+mkdir -p "$SUPER_TOOLS/bin" "$SUPER_TOOLS/lib" "$SUPER_TOOLS/config" \
+  "$SUPER_VAULT/alpha/facts"
+cp "$REPO/bin/spine-gen" "$SUPER_TOOLS/bin/spine-gen"
+cp "$REPO/lib/"*.py "$SUPER_TOOLS/lib/"
+chmod +x "$SUPER_TOOLS/bin/spine-gen"
+printf 'alpha\n' > "$SUPER_TOOLS/config/projects.txt"
+printf 'user\n' > "$SUPER_TOOLS/config/agents.txt"
+ORIGINAL_ULID=01J00000000000000000000001
+REPLACEMENT="$SUPER_VAULT/alpha/facts/replacement--01J00000000000000000000002.md"
+cat > "$SUPER_VAULT/alpha/facts/original--$ORIGINAL_ULID.md" <<'EOF'
+---
+type: fact
+title: Promoted current knowledge
+summary: This remains current until its replacement passes the packet gate.
+status: active
+sensitivity: normal
+confidence: verified
+created: 2026-08-01T00:00:00Z
+agent: user
+---
+Synthetic promoted record.
+EOF
+write_replacement() {
+  confidence="$1"
+  cat > "$REPLACEMENT" <<EOF
+---
+type: fact
+title: Replacement knowledge
+summary: Synthetic replacement at confidence $confidence.
+status: active
+sensitivity: normal
+confidence: $confidence
+supersedes: $ORIGINAL_ULID
+created: 2026-08-01T00:01:00Z
+agent: user
+---
+Synthetic replacement record.
+EOF
+}
+write_replacement candidate
+SPINE_ROOT="$SUPER_VAULT" SPINE_TOOLS_DIR="$SUPER_TOOLS" \
+  "$SUPER_TOOLS/bin/spine-gen" >/dev/null
+grep -Fq 'Promoted current knowledge' "$SUPER_VAULT/_index/packet-alpha.md" \
+  || fail "candidate replacement hid promoted current knowledge"
+if grep -Fq 'Replacement knowledge' "$SUPER_VAULT/_index/packet-alpha.md"; then
+  fail "candidate replacement bypassed the packet promotion gate"
+fi
+grep -Fqx $'alpha\t1\t1\t1' "$SUPER_VAULT/_index/.packet-stats.tsv" \
+  || fail "candidate replacement corrupted packet statistics"
+write_replacement verified
+SPINE_ROOT="$SUPER_VAULT" SPINE_TOOLS_DIR="$SUPER_TOOLS" \
+  "$SUPER_TOOLS/bin/spine-gen" >/dev/null
+grep -Fq 'Replacement knowledge' "$SUPER_VAULT/_index/packet-alpha.md" \
+  || fail "promoted replacement was not shipped"
+if grep -Fq 'Promoted current knowledge' "$SUPER_VAULT/_index/packet-alpha.md"; then
+  fail "promoted replacement did not hide superseded knowledge"
+fi
+grep -Fqx $'alpha\t1\t1\t1' "$SUPER_VAULT/_index/.packet-stats.tsv" \
+  || fail "promoted replacement corrupted packet statistics"
 
 echo "packet-limits-test: PASS (tab=$tab_bytes equals=$equals_bytes default=$default_bytes floor=$floor_bytes)"

@@ -260,7 +260,7 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
 
     source = root / "alpha" / "facts" / "packet-input.md"
 
-    def run_health(stats_bytes: bytes | None, *, stale: bool = False,
+    def run_health(stats_bytes: bytes | None, *, stale: bool = False, future: bool = False,
                    source_newer: bool = False) -> tuple[subprocess.CompletedProcess[str], str]:
         source.unlink(missing_ok=True)
         if stats_bytes is None:
@@ -276,6 +276,9 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
                 if source_newer:
                     source.write_text("synthetic packet input\n", encoding="utf-8")
                     os.utime(source, (old + 10, old + 10))
+            elif future:
+                future_time = time.time() + 3600
+                os.utime(stats, (future_time, future_time))
         (logs / "sync.log").unlink(missing_ok=True)
         (logs / ".health-alert-tg").unlink(missing_ok=True)
         result = subprocess.run(
@@ -322,4 +325,9 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
     )
     require("packet statistics missing, stale, incomplete, or unreadable" in health_log,
             "statistics older than a packet input did not alert")
+    proc, health_log = run_health(
+        b"alpha\t20\t20\t1\nbeta\t20\t20\t1\n", future=True
+    )
+    require("packet statistics missing, stale, incomplete, or unreadable" in health_log,
+            "future-dated statistics did not alert")
 print("packet-health-test: PASS")

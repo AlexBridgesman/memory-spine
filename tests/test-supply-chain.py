@@ -35,7 +35,8 @@ if "--network none" not in ci or ':/repo:ro' not in ci:
 for command in (
     "tests/test-installer.sh", "tests/test-paths.sh", "tests/test-selftest-isolation.sh",
     "tests/test-cross-agent-e2e.sh", "tests/test-recall-synonyms.py",
-    "tests/test-packet-limits.sh", "tests/test-packet-delivery.sh", "tests/test-packet-health.py",
+    "tests/test-packet-limits.sh", "tests/test-packet-delivery.sh", "tests/test-hook-delivery.sh",
+    "tests/test-packet-health.py",
     "tests/test-website.py", "benchmarks/recall/run.py",
 ):
     if command not in ci:
@@ -51,14 +52,29 @@ if "default: v0.1.1" in release:
     errors.append("release-integrity.yml: manual packaging still defaults to a stale release ref")
 if "description: Exact tag or full commit SHA to package" not in release:
     errors.append("release-integrity.yml: manual packaging does not require an explicit exact ref")
+if "name: Test extracted archive" not in release:
+    errors.append("release-integrity.yml: packaged archive is not exercised before upload")
 
-sync = (repo / "bin" / "spine-sync").read_text(encoding="utf-8")
-resolver_candidates = "for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3"
-if sync.count("/usr/bin/python3") != 1 or resolver_candidates not in sync:
-    errors.append("spine-sync: hard-coded system Python remains in the production path")
-for contract in ("SPINE_PYTHON", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
-    if contract not in sync:
-        errors.append(f"spine-sync: Python resolver missing {contract}")
+builder = (repo / "scripts" / "build-release.sh").read_text(encoding="utf-8")
+for contract in ("RELEASE-METADATA", 'mtime=0', 'gzip.GzipFile(filename=""'):
+    if contract not in builder:
+        errors.append(f"build-release.sh: deterministic embedded provenance missing {contract}")
+
+paths = (repo / "lib" / "spine_paths.sh").read_text(encoding="utf-8")
+for contract in ("spine_resolve_python", "SPINE_PYTHON", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
+    if contract not in paths:
+        errors.append(f"spine_paths.sh: shared Python resolver missing {contract}")
+python_consumers = (
+    "spine-sync", "spine-health", "spine-selftest", "spine-preflight", "spine-uninstall",
+    "spine-hook-sessionstart", "spine-hook-stop", "spine-digest", "spine-maintain",
+    "spine-notify", "spine-tg-token",
+)
+for name in python_consumers:
+    script = (repo / "bin" / name).read_text(encoding="utf-8")
+    if "/usr/bin/python3" in script:
+        errors.append(f"{name}: hard-coded system Python remains in the production path")
+    if "spine_resolve_python" not in script:
+        errors.append(f"{name}: shared Python resolver is not used")
 
 sandbox = (repo / "bin" / "spine-agent-sandbox").read_text(encoding="utf-8")
 if 'model = "gpt-5.6-sol"' in sandbox:

@@ -7,21 +7,28 @@
   value-blind warnings, and complete `spine-packet` output stays within the cap.
 - Pins are emitted first and never trimmed; generation fails rather than
   publishing a packet that cannot fit every pin. Retained records are counted
-  by identity, so blocked facts/decisions cannot inflate health statistics.
+  by identity, so blocked facts/decisions cannot inflate health statistics;
+  blocked pins retain an explicit blocked label.
 - `spine-gen` publishes one atomic all-scope statistics snapshot even for a
   targeted invocation and invalidates the previous snapshot before publishing
   any packet. Health rejects missing, input-stale, malformed, duplicate,
   unexpected, or incomplete scope evidence before applying starvation policy;
   quiet unchanged vaults do not fail a wall-clock freshness timer.
 - Delta byte trimming preserves an explicit omission count. The per-agent
-  cursor advances only after stdout flushes successfully, so a broken consumer
-  replays rather than silently consuming undelivered changes.
-- Production sync resolves Python through `SPINE_PYTHON`, standard install
-  locations, or `PATH`; BSD/GNU stat fallbacks isolate failed probe output.
+  cursor advances only after stdout flushes successfully; the session hook uses
+  a two-phase cursor handoff and records delivery only after nonempty bytes reach
+  its sink, so a broken consumer replays undelivered changes.
+- Failed generation invalidates the atomic snapshot and `spine-packet` refuses
+  old packet bytes until regeneration. Superseding records hide current packet
+  knowledge only after the replacement itself passes the promotion gate.
+- Shell runtimes share Python discovery through `SPINE_PYTHON`, `PATH`, or
+  standard install locations; BSD/GNU stat fallbacks isolate failed probe output.
+- Fresh installs regenerate after the genesis record. Deterministic archives
+  embed exact commit/tree/version metadata so extracted installs retain provenance.
 - `spine-agent-sandbox` is documented as configuration-profile isolation, not
   filesystem confinement, and generated profiles no longer pin a model name.
-- Dedicated packet-limit, final-delivery, and health-boundary contracts run in
-  the macOS/Linux CI matrix, and the opt-in example is covered by installer verification.
+- Dedicated packet-limit, final-delivery, hook, and health-boundary contracts run
+  in the macOS/Linux CI matrix; release CI also exercises the extracted archive.
 - README, architecture, technical reference, and machine-readable mirrors use
   the same packet-limit and starvation semantics.
 

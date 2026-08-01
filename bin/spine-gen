@@ -184,23 +184,40 @@ def gen_project(project, inbox_n=0):
                              r.get("created") if isinstance(r.get("created"), str) else ""),
               reverse=True)
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    # SUPERSEDED RECORDS OUT OF THE CURRENT VIEW (external review 2026-07-30:
-    # "immutability piles up stale records"). A record whose ULID is the
-    # `supersedes:` target of another record is no longer current knowledge:
-    # the auto-channels (packet) drop it, the INDEX labels it. The file itself
-    # stays forever — that is the whole point of supersede-instead-of-edit.
+    # The INDEX labels every declared supersede edge. Packet removal is stricter:
+    # the replacement must itself pass the packet gate, otherwise an unpromoted
+    # candidate could erase verified current knowledge from auto-injection.
+    def rec_ulid(r):
+        m = re.search(r"--([0-9A-HJKMNP-TV-Z]{26})\.md$", r["_path"])
+        return m.group(1) if m else ""
+
+    records_by_id = {}
+    for r in recs:
+        record_id = rec_ulid(r)
+        if record_id:
+            records_by_id[record_id] = r
     superseded_ids = set()
     for r in recs:
         s = r.get("supersedes")
         if isinstance(s, str) and s.strip():
             superseded_ids.add(s.strip())
-
-    def rec_ulid(r):
-        m = re.search(r"--([0-9A-HJKMNP-TV-Z]{26})\.md$", r["_path"])
-        return m.group(1) if m else ""
-
     for r in recs:
         r["_superseded"] = rec_ulid(r) in superseded_ids
+
+    packet_superseded_ids = set()
+    for replacement in recs:
+        if not in_packet(replacement):
+            continue
+        target = replacement.get("supersedes")
+        visited = set()
+        while isinstance(target, str) and target.strip() and target.strip() not in visited:
+            target = target.strip()
+            visited.add(target)
+            packet_superseded_ids.add(target)
+            ancestor = records_by_id.get(target)
+            target = ancestor.get("supersedes") if ancestor else None
+    for r in recs:
+        r["_packet_superseded"] = rec_ulid(r) in packet_superseded_ids
 
     act = [r for r in recs if r.get("status") in ("active", "blocked")]
     # CONTRACT (README): private — explicit search only; local_only — never in packet/INDEX.
@@ -247,8 +264,8 @@ def gen_project(project, inbox_n=0):
     if project != "inbox" and inbox_n > 0:
         P.append(f"⚠ INBOX: {inbox_n} record(s) awaiting triage — ask the owner or run spine-triage.")
     P.append("")
-    pk = [r for r in act if in_packet(r) and not r["_superseded"]]
-    superseded_n = len([r for r in act if in_packet(r) and r["_superseded"]])
+    pk = [r for r in act if in_packet(r) and not r["_packet_superseded"]]
+    superseded_n = len([r for r in act if in_packet(r) and r["_packet_superseded"]])
     def is_pin(record):
         return str(record.get("pinned")).lower() == "true"
 
@@ -281,7 +298,8 @@ def gen_project(project, inbox_n=0):
                 elif isinstance(s, str) and len(s) > sum_len:
                     s = s[:sum_len].rstrip() + "…"
                 pin = "📌 " if str(r.get("pinned")).lower() == "true" else ""
-                L.append(f"- {pin}{r.get('title')}" + (f" [{s}]" if s else ""))
+                blocked = "[BLOCKED] " if r.get("status") == "blocked" else ""
+                L.append(f"- {pin}{blocked}{r.get('title')}" + (f" [{s}]" if s else ""))
             L.append("")
         return L
 

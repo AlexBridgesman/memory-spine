@@ -25,9 +25,10 @@ if [ -z "$GIT" ]; then
     [ -x "$candidate" ] && { GIT="$candidate"; break; }
   done
 fi
+PYTHON="$(spine_resolve_python 2>/dev/null || true)"
 
 [ -n "$GIT" ] && [ -x "$GIT" ] || { echo "PREFLIGHT FAIL: git missing"; FAIL=1; }
-command -v python3 >/dev/null 2>&1 || { echo "PREFLIGHT FAIL: python3 missing"; FAIL=1; }
+[ -n "$PYTHON" ] || { echo "PREFLIGHT FAIL: python3 missing"; FAIL=1; }
 command -v rsync >/dev/null 2>&1 || { echo "PREFLIGHT FAIL: rsync missing"; FAIL=1; }
 [ -n "$GITLEAKS" ] && [ -x "$GITLEAKS" ] || { echo "PREFLIGHT FAIL: gitleaks missing — fail-closed"; FAIL=1; }
 [ -d "$ROOT/.git" ] || { echo "PREFLIGHT FAIL: $ROOT is not a git repo"; FAIL=1; }

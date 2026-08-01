@@ -35,6 +35,7 @@ if "--network none" not in ci or ':/repo:ro' not in ci:
 for command in (
     "tests/test-installer.sh", "tests/test-paths.sh", "tests/test-selftest-isolation.sh",
     "tests/test-cross-agent-e2e.sh", "tests/test-recall-synonyms.py",
+    "tests/test-packet-limits.sh", "tests/test-packet-health.py",
     "tests/test-website.py", "benchmarks/recall/run.py",
 ):
     if command not in ci:

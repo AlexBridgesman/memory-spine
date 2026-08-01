@@ -493,7 +493,7 @@
       <div class="step glass rev" style="--d:200ms">
         <div class="num">03</div>
         <h3 data-i18n="st3h">Distill honestly</h3>
-        <p data-i18n="st3p">Each scope compiles into a ≤14 KB packet: pins first, then decisions, facts, blockers. Every truncation carries an honest counter.</p>
+        <p data-i18n="st3p">Each scope compiles into a bounded packet with a 14 KB default and an optional per-scope cap: pins first, then decisions, facts, blockers. Every truncation carries an honest counter.</p>
       </div>
       <div class="step glass rev" style="--d:300ms">
         <div class="num">04</div>
@@ -649,7 +649,7 @@ const I18N = { ua: {
   c_eye: "Процес", c_h: "Цикл памʼяті",
   st1h: "Запис на чекпоінтах", st1p: "Агенти фіксують рішення і факти в момент, коли вони стались — тільки через spine-new: валідація, скан секретів, анти-дубль.",
   st2h: "Один append-oriented канон", st2p: "Один запис = один Markdown-файл у ~/AgentMemory. За протоколом записи замінюються через supersede, а spine-sync може комітити за розкладом власника.",
-  st3h: "Чесна дистиляція", st3p: "Кожен scope збирається в packet ≤14 КБ: спершу піни, далі рішення, факти, блокери. Кожна обрізка — з чесним лічильником.",
+  st3h: "Чесна дистиляція", st3p: "Кожен scope збирається в обмежений packet: 14 КБ за замовчуванням або опційний ліміт для scope. Спершу піни, далі рішення, факти, блокери; кожна обрізка — з чесним лічильником.",
   st4h: "Інтеграція з кожним агентом", st4p: "Claude Code може отримувати пакет через hook. Інші агенти завантажують його явно; універсальної автоінʼєкції продукт не заявляє.",
   d_eye: "Обмеження сформульовано явно", d_h: "Рішення, закодовані в інструментах і тестах",
   c1h: "Файли з локальною git-історією", c1p: "Git дає локальну історію й аудит; резервні копії працюють лише після налаштування та перевірки. <b>За протоколом знання замінюються новим записом, а не стираються непомітно.</b>",

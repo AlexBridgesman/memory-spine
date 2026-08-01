@@ -40,6 +40,8 @@ assert_line alpha "$TOOLS/config/projects.txt"
 assert_line beta "$TOOLS/config/projects.txt"
 assert_line inbox "$TOOLS/config/projects.txt"
 assert_line agent-one "$TOOLS/config/agents.txt"
+[ -f "$TOOLS/config/packet-limits.conf.example" ] || fail "packet-limit example was not installed"
+[ ! -e "$TOOLS/config/packet-limits.conf" ] || fail "installer enabled packet limits without owner opt-in"
 
 # An upgrade without explicit list flags preserves owner-maintained dictionaries byte-for-byte.
 printf 'alpha\nbeta\ninbox\nowner-scope\n' > "$TOOLS/config/projects.txt"

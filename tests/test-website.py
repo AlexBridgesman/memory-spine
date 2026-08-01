@@ -124,6 +124,7 @@ for banned in (
     "Each scope compiles into a ≤14 KB packet", "Кожен scope збирається в packet ≤14 КБ",
     "Packet ≤14 KB + per-agent delta", "packet</b> (≤14 KB", "packet-&lt;scope&gt;.md</code> (≤14 KB)",
     "nothing is pushed anywhere", "real incident", "third-party desktop app once",
+    "Pins ride at the top of every packet and never fall out",
 ):
     require(banned.casefold() not in claim_text.casefold(), f"stale public claim remains: {banned}")
 qualified_durability = "Committed history remains available unless history is explicitly rewritten."

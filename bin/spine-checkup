@@ -13,7 +13,15 @@ LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 PREFIX="${1:-Spine checkup}"
 OK=0; BAD=0; LINES=""
 
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }  # BSD/GNU stat
+mtime() {
+  local value
+  if value=$(stat -f %m "$1" 2>/dev/null); then
+    case "$value" in ''|*[!0-9]*) ;;
+      *) printf '%s\n' "$value"; return 0 ;;
+    esac
+  fi
+  stat -c %Y "$1" 2>/dev/null
+}
 
 check() { # $1 name, $2 condition command (0 = good)
   if eval "$2" >/dev/null 2>&1; then OK=$((OK+1)); LINES="$LINES

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 repo = Path(__file__).resolve().parents[1]
@@ -131,6 +132,65 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-packet-health.") as tmp:
     require("cannot read packet statistics" in proc.stderr, "stats read failure warning missing")
     require("Traceback" not in proc.stderr, "stats read failure leaked a traceback")
 
+# A killed all-scope refresh must invalidate the previous snapshot before any
+# packet is published. The child replaces generation with a deterministic
+# first-packet write and pause, then the parent kills it in that exact window.
+with tempfile.TemporaryDirectory(prefix="memory-spine-stats-kill.") as tmp:
+    base = Path(tmp)
+    root = base / "vault"
+    tools = base / "tools"
+    out = root / "_index"
+    signal_path = base / "first-packet-published"
+    for directory in (out, root / "config", tools / "config"):
+        directory.mkdir(parents=True, exist_ok=True)
+    (tools / "config" / "projects.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    (tools / "config" / "types.txt").write_text("fact\n", encoding="utf-8")
+    stats = out / ".packet-stats.tsv"
+    stats.write_text("alpha\t20\t20\t1\nbeta\t20\t20\t1\n", encoding="utf-8")
+    child_code = r'''
+import runpy,sys,time
+from pathlib import Path
+script,output,signal=sys.argv[1:]
+ns=runpy.run_path(script,run_name="spine_gen_kill_probe")
+state=ns["main"].__globals__
+state["PROJECTS"]=["alpha","beta"]
+state["OUT"]=output
+state["inbox_pending"]=lambda: 0
+def fake_gen(project,_inbox):
+    if project == "alpha":
+        Path(output,"packet-alpha.md").write_text("partial packet\n",encoding="utf-8")
+        Path(signal).write_text("ready\n",encoding="utf-8")
+        time.sleep(60)
+    return 1,20,20,1
+state["gen_project"]=fake_gen
+sys.argv=[script]
+raise SystemExit(ns["main"]())
+'''
+    env = os.environ.copy()
+    env.update({"SPINE_ROOT": str(root), "SPINE_TOOLS_DIR": str(repo),
+                "SPINE_CONFIG_DIR": str(tools / "config")})
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(repo / "bin" / "spine-gen"),
+         str(out), str(signal_path)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.time() + 5
+    while not signal_path.exists() and time.time() < deadline and proc.poll() is None:
+        time.sleep(0.02)
+    if not signal_path.exists():
+        if proc.poll() is None:
+            proc.kill()
+        child_stdout, child_stderr = proc.communicate(timeout=5)
+        require(False, "kill-window generation probe did not publish its first packet "
+                f"(rc={proc.returncode}, stdout={child_stdout!r}, stderr={child_stderr!r})")
+    proc.kill()
+    proc.communicate(timeout=5)
+    require((out / "packet-alpha.md").is_file(), "kill-window probe missed partial publication")
+    require(not stats.exists(), "SIGKILL window left previous packet statistics looking valid")
+
 health_script = (repo / "bin" / "spine-health").read_text(encoding="utf-8")
 require("lib/spine_packet_health.py" in health_script, "spine-health does not invoke tested classifier")
 require("--strict" in health_script, "spine-health does not fail visibly on malformed statistics")
@@ -195,17 +255,27 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
         "SPINE_TEST_REAL_STAT": shutil.which("stat") or "/usr/bin/stat",
         "SPINE_GIT": shutil.which("git") or "git",
         "SPINE_PYTHON": sys.executable,
-        "SPINE_PACKET_STATS_MAX_AGE": "3600",
         "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
     })
 
-    def run_health(stats_bytes: bytes | None, *, stale: bool = False) -> tuple[subprocess.CompletedProcess[str], str]:
+    source = root / "alpha" / "facts" / "packet-input.md"
+
+    def run_health(stats_bytes: bytes | None, *, stale: bool = False,
+                   source_newer: bool = False) -> tuple[subprocess.CompletedProcess[str], str]:
+        source.unlink(missing_ok=True)
         if stats_bytes is None:
             stats.unlink(missing_ok=True)
         else:
             stats.write_bytes(stats_bytes)
             if stale:
-                os.utime(stats, (0, 0))
+                old = time.time() - 172800
+                os.utime(stats, (old, old))
+                for dictionary in (root / "config" / "projects.txt",
+                                   tools / "config" / "projects.txt"):
+                    os.utime(dictionary, (old - 10, old - 10))
+                if source_newer:
+                    source.write_text("synthetic packet input\n", encoding="utf-8")
+                    os.utime(source, (old + 10, old + 10))
         (logs / "sync.log").unlink(missing_ok=True)
         (logs / ".health-alert-tg").unlink(missing_ok=True)
         result = subprocess.run(
@@ -244,6 +314,12 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
             "missing statistics did not alert")
 
     proc, health_log = run_health(b"alpha\t20\t20\t1\nbeta\t20\t20\t1\n", stale=True)
+    require("packet statistics missing, stale, incomplete, or unreadable" not in health_log,
+            "quiet unchanged vault rejected an old but current statistics snapshot")
+
+    proc, health_log = run_health(
+        b"alpha\t20\t20\t1\nbeta\t20\t20\t1\n", stale=True, source_newer=True
+    )
     require("packet statistics missing, stale, incomplete, or unreadable" in health_log,
-            "stale statistics did not alert")
+            "statistics older than a packet input did not alert")
 print("packet-health-test: PASS")

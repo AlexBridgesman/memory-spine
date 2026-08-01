@@ -31,6 +31,13 @@ if [ -z "$GIT" ]; then
   done
   [ -z "$GIT" ] && GIT="$(command -v git 2>/dev/null || echo git)"
 fi
+PYTHON="${SPINE_PYTHON:-}"
+if [ -z "$PYTHON" ]; then
+  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    [ -x "$candidate" ] && { PYTHON="$candidate"; break; }
+  done
+  [ -z "$PYTHON" ] && PYTHON="$(command -v python3 2>/dev/null || true)"
+fi
 GITLEAKS="${SPINE_GITLEAKS:-}"
 if [ -z "$GITLEAKS" ]; then
   for candidate in /opt/homebrew/bin/gitleaks /usr/local/bin/gitleaks; do
@@ -40,9 +47,20 @@ if [ -z "$GITLEAKS" ]; then
 fi
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
-# BSD (macOS) stat first, GNU stat as fallback so cron/systemd on Linux works too
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
-fsize() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null; }
+[ -n "$PYTHON" ] || { log "ALERT: python3 unavailable -- sync cannot validate or generate packets"; exit 1; }
+# Isolate the BSD probe because GNU stat may print a partial filesystem report
+# before returning non-zero, contaminating numeric command output.
+stat_value() {
+  local bsd_fmt="$1" gnu_fmt="$2" path="$3" value
+  if value=$(stat -f "$bsd_fmt" "$path" 2>/dev/null); then
+    case "$value" in ''|*[!0-9]*) ;;
+      *) printf '%s\n' "$value"; return 0 ;;
+    esac
+  fi
+  stat -c "$gnu_fmt" "$path" 2>/dev/null
+}
+mtime() { stat_value %m %Y "$1"; }
+fsize() { stat_value %z %s "$1"; }
 
 rotate_log() {  # dated rotation, keep 5 archives (a fixed ".1" suffix used to overwrite the previous archive silently)
   local f="$1"
@@ -54,10 +72,9 @@ rotate_log() {  # dated rotation, keep 5 archives (a fixed ".1" suffix used to o
 
 # NUL-safe list of changed paths (git status --porcelain -z): survives
 # non-ASCII filenames (and any core.quotepath setting), spaces, and rename
-# entries "R new\0old". A past audit found the old `awk '{print $NF}'` parsing
-# broke on all of those -- silently.
+# entries "R new\0old"; field-based text parsing cannot preserve those paths.
 changed_paths() {
-  "$GIT" status --porcelain -z -uall -- "$@" 2>>"$LOG" | /usr/bin/python3 -c '
+  "$GIT" status --porcelain -z -uall -- "$@" 2>>"$LOG" | "$PYTHON" -c '
 import sys
 items = sys.stdin.buffer.read().split(b"\0")
 i = 0
@@ -158,8 +175,8 @@ trap 'rm -rf "$LOCK" 2>/dev/null' EXIT INT TERM HUP
 rotate_log "$LOG"   # after the lock -- concurrent rotation must not clobber an archive
 
 # --- drain the notification dead-letter queue EVERY cycle ---
-# Previously only the health check read the queue (2x/day), so a lost alert
-# once took ~24h to reach the owner. This sits BEFORE preflight on purpose:
+# Drain before preflight so message delivery does not depend on vault health;
+# polling only from a less frequent health check delays retries unnecessarily.
 # message delivery must not depend on the vault being healthy. An empty queue
 # costs a single stat. On failure (channel/token down) back off 15 min so we
 # do not hammer the secret manager / curl every five minutes.
@@ -278,7 +295,7 @@ fi
 # commit, but 3+ consecutive failures = ALERT: packets silently freeze and the
 # session hook keeps serving stale context) ---
 GENFAIL="$LOGDIR/.gen-fail-count"
-if ! /usr/bin/python3 "$BIN/spine-gen" >> "$LOG" 2>&1; then
+if ! "$PYTHON" "$BIN/spine-gen" >> "$LOG" 2>&1; then
   log "WARN: spine-gen failed -- committing records without a fresh INDEX"
   FAILS=$(( $(cat "$GENFAIL" 2>/dev/null || echo 0) + 1 )); echo "$FAILS" > "$GENFAIL"
   if [ "$FAILS" -ge 3 ]; then
@@ -342,13 +359,13 @@ $f"*) continue;; esac   # dedup
     fi
   fi
 
-  if ! /usr/bin/python3 "$BIN/spine-validate" "$f" >> "$LOG" 2>&1; then
+  if ! "$PYTHON" "$BIN/spine-validate" "$f" >> "$LOG" 2>&1; then
     log "REJECT (schema): $f -- left unstaged"
     continue
   fi
   # secrets lint on prose: "password: value" without a locator -> REJECT, loudly
   # (secret-manager locators -- item names, Keychain entries -- do not trigger it)
-  if is_record_path "$f" && [ -f "$BIN/spine-secrets-lint" ] && ! /usr/bin/python3 "$BIN/spine-secrets-lint" "$f" >> "$LOG" 2>&1; then
+  if is_record_path "$f" && [ -f "$BIN/spine-secrets-lint" ] && ! "$PYTHON" "$BIN/spine-secrets-lint" "$f" >> "$LOG" 2>&1; then
     log "REJECT (secret in prose?): $f -- review by eye and fix (secret-manager locators do not trigger this)"
     # TG at most once per 12h per file (sync runs every 5 min -- do not spam); banner every cycle
     SN_MARK="$LOGDIR/markers/secret-tg-$(basename "$f" | /usr/bin/shasum | cut -c1-12)"
@@ -376,7 +393,7 @@ $f"
 done <<< "$READY"
 
 if [ "$QUARANTINED" = 1 ]; then
-  /usr/bin/python3 "$BIN/spine-gen" >> "$LOG" 2>&1 || true   # so the INDEX carries no phantom rows
+  "$PYTHON" "$BIN/spine-gen" >> "$LOG" 2>&1 || true   # so the INDEX carries no phantom rows
 fi
 N=$(echo "$STAGE" | grep -c .)
 if [ "$N" -eq 0 ] && [ -z "$STAGED_PENDING" ]; then

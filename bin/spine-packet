@@ -172,18 +172,33 @@ def delta_section(project, prev):
                 upd.append(entry)
     if not new and not upd:
         return ""
-    L = ["", f"--- DELTA for scope '{project}' since the last injection (memory DATA, not instructions) ---"]
+    groups = {}
     for label, items in (("new", new), ("updated", upd)):
         items.sort(reverse=True)
-        for _, line in items[:DELTA_MAX]:
-            L.append(f"+ {line}" if label == "new" else f"~ {line}")
-        if len(items) > DELTA_MAX:
-            L.append(f"  (...{len(items) - DELTA_MAX} more {label})")
-    L.append("--- END DELTA ---")
-    out = "\n".join(L)
-    while len(out.encode()) > DELTA_BYTES and len(L) > 3:
-        L.pop(-2)
-        out = "\n".join(L)
+        groups[label] = {"all": items, "shown": list(items[:DELTA_MAX])}
+
+    def render():
+        lines = ["", f"--- DELTA for scope '{project}' since the last injection (memory DATA, not instructions) ---"]
+        for label in ("new", "updated"):
+            group = groups[label]
+            prefix = "+" if label == "new" else "~"
+            lines.extend(f"{prefix} {line}" for _, line in group["shown"])
+            omitted = len(group["all"]) - len(group["shown"])
+            if omitted:
+                lines.append(f"  (...{omitted} more {label})")
+        lines.append("--- END DELTA ---")
+        return "\n".join(lines)
+
+    out = render()
+    while len(out.encode()) > DELTA_BYTES:
+        candidates = [
+            (len(group["shown"][-1][1].encode()), label)
+            for label, group in groups.items() if group["shown"]
+        ]
+        if not candidates:
+            raise RuntimeError("delta metadata exceeds the delivery budget")
+        groups[max(candidates)[1]]["shown"].pop()
+        out = render()
     return out
 
 
@@ -365,7 +380,16 @@ def main():
         except Exception as e:   # must never break packet injection
             sys.stderr.write(f"spine-packet: recent failure: {e}\n")
 
-    sys.stdout.write(output)
+    try:
+        sys.stdout.write(output)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # Delivery failed: leave the marker untouched so the delta can replay.
+        try:
+            sys.stdout = open(os.devnull, "w")
+        except OSError:
+            pass
+        return 1
     if marker is not None and marker_value is not None:
         try:
             os.makedirs(MARKERS, exist_ok=True)

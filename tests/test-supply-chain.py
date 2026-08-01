@@ -52,6 +52,44 @@ if "default: v0.1.1" in release:
 if "description: Exact tag or full commit SHA to package" not in release:
     errors.append("release-integrity.yml: manual packaging does not require an explicit exact ref")
 
+sync = (repo / "bin" / "spine-sync").read_text(encoding="utf-8")
+resolver_candidates = "for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3"
+if sync.count("/usr/bin/python3") != 1 or resolver_candidates not in sync:
+    errors.append("spine-sync: hard-coded system Python remains in the production path")
+for contract in ("SPINE_PYTHON", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
+    if contract not in sync:
+        errors.append(f"spine-sync: Python resolver missing {contract}")
+
+sandbox = (repo / "bin" / "spine-agent-sandbox").read_text(encoding="utf-8")
+if 'model = "gpt-5.6-sol"' in sandbox:
+    errors.append("spine-agent-sandbox: generated config hard-codes an environment-specific model")
+if "does not block direct filesystem reads" not in sandbox:
+    errors.append("spine-agent-sandbox: direct-filesystem-read limitation is not explicit")
+if "Spine command access" not in sandbox:
+    errors.append("spine-agent-sandbox: gate scope is not described as Spine-mediated access")
+
+# A failed BSD stat probe can print partial GNU output before its non-zero exit;
+# a direct `probe || fallback` therefore contaminates numeric command output.
+noisy_stat_fallback = re.compile(r"stat -f %[mz].*\|\|\s*stat -c %[Ys]")
+for script in sorted((repo / "bin").glob("spine-*")):
+    if noisy_stat_fallback.search(script.read_text(encoding="utf-8", errors="replace")):
+        errors.append(f"{script.name}: noisy BSD/GNU stat fallback is not isolated")
+
+# Public source comments explain generic rationale, not owner-specific incident
+# history, exact private audit dates, or operational anecdotes.
+private_anecdote = re.compile(
+    r"past audit|past incident|found by an audit|audit (?:found|counted)|"
+    r"exactly what happened|owner once|once (?:hung|took|started|received|lived)|"
+    r"20 open|9 of them|over 3 weeks",
+    re.I,
+)
+for directory in (repo / "bin", repo / "lib"):
+    for source in sorted(path for path in directory.iterdir() if path.is_file()):
+        text = source.read_text(encoding="utf-8", errors="replace")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if private_anecdote.search(line):
+                errors.append(f"{source.relative_to(repo)}:{line_no}: private operational anecdote remains")
+
 if errors:
     for error in errors:
         print(f"FAIL: {error}", file=sys.stderr)

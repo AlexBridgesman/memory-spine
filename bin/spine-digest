@@ -74,9 +74,8 @@ QUAR=$(ls "$ROOT/_quarantine" 2>/dev/null | wc -l | tr -d ' ')
 UNSTAGED=$(cd "$ROOT" && git status --porcelain -uall -- '*.md' 2>/dev/null | grep -c .)
 case "$UNSTAGED" in ''|*[!0-9]*) UNSTAGED=0 ;; esac
 
-# 4c) items addressed to the owner. Lesson from a past audit: 20 open
-# for_agent threads sat in memory, 9 of them addressed to the owner -- and no
-# channel ever surfaced them.
+# 4c) Surface active items addressed to the owner so coordination work is not
+# left discoverable only through an explicit search.
 read -r MINE MINE_OLD <<< "$(/usr/bin/python3 - "$ROOT" "$OWNER" << 'PYEOF'
 import glob, os, re, sys, datetime
 root, owner = sys.argv[1], re.escape(sys.argv[2])

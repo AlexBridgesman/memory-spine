@@ -72,11 +72,14 @@ class PacketLimitError(RuntimeError):
     pass
 
 
-def _invalidate_packet_stats():
+def _invalidate_packet_stats(strict=False):
     try:
         os.unlink(os.path.join(OUT, ".packet-stats.tsv"))
-    except OSError:
+    except FileNotFoundError:
         pass
+    except OSError:
+        if strict:
+            raise
 
 def parse_fm(path):
     try:
@@ -378,6 +381,13 @@ def main():
     stats = []
     # A targeted invocation still refreshes every configured packet so health
     # receives one complete, internally consistent snapshot.
+    # Invalidate the previous evidence before the first packet is published;
+    # an abrupt stop can then leave only an explicitly incomplete snapshot.
+    try:
+        _invalidate_packet_stats(strict=True)
+    except OSError:
+        print("spine-gen: cannot invalidate previous packet statistics", file=sys.stderr)
+        return 1
     try:
         for p in PROJECTS:
             n, eligible, shipped, has_facts = gen_project(p, inbox_n)

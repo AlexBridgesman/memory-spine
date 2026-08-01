@@ -71,7 +71,7 @@ EOF
 python3 - "$VAULT/alpha/facts/delta.md" "$marker" <<'PY'
 import os,sys
 marker=float(open(sys.argv[2],encoding='utf-8').read())
-os.utime(sys.argv[1],(marker+2,marker+2))
+os.utime(sys.argv[1],(marker+0.001,marker+0.001))
 PY
 before=$(cat "$marker")
 run_packet > "$TMP/delta.out" 2> "$TMP/delta.err"
@@ -81,9 +81,90 @@ grep -Fq 'Delivery cap delta sentinel' "$TMP/delta.out" || fail "small delta did
 after=$(cat "$marker")
 [ "$after" != "$before" ] || fail "marker did not advance after a delivered delta"
 
-run_packet --recent 100 > "$TMP/recent.out" 2> "$TMP/recent.err"
+# Byte trimming must retain an honest omission count before the cursor advances.
+python3 - "$VAULT/alpha/facts" "$marker" <<'PY'
+from pathlib import Path
+import os,sys
+root=Path(sys.argv[1])
+marker=float(Path(sys.argv[2]).read_text(encoding='utf-8'))
+for i in range(20):
+    path=root / f"overflow-{i:02d}.md"
+    path.write_text(
+        "---\n"
+        "type: fact\n"
+        f"title: Overflow delta {i:02d} " + ("x" * 220) + "\n"
+        "summary: Synthetic overflow delta.\n"
+        "status: active\n"
+        "sensitivity: normal\n"
+        "confidence: verified\n"
+        "created: 2026-08-01T00:00:00Z\n"
+        "agent: user\n"
+        "---\nSynthetic overflow.\n",
+        encoding="utf-8",
+    )
+    os.utime(path, (marker + 0.001, marker + 0.001))
+PY
+run_packet > "$TMP/overflow.out" 2> "$TMP/overflow.err"
+grep -Eq '\(\.\.\.[0-9]+ more updated\)' "$TMP/overflow.out" \
+  || fail "byte-trimmed delta lost its omission count"
+run_packet > "$TMP/overflow-repeat.out" 2> "$TMP/overflow-repeat.err"
+grep -Fq -- "--- DELTA for scope 'alpha'" "$TMP/overflow-repeat.out" \
+  && fail "represented overflow delta replayed after marker advance"
+
+# A closed stdout sink must not consume the delta marker.
+python3 - "$VAULT/alpha/facts/broken-pipe.md" "$marker" <<'PY'
+from pathlib import Path
+import os,sys
+path=Path(sys.argv[1]); marker=float(Path(sys.argv[2]).read_text(encoding='utf-8'))
+path.write_text(
+    "---\ntype: fact\ntitle: Broken pipe delta sentinel\n"
+    "summary: Must replay after a failed stdout flush.\nstatus: active\n"
+    "sensitivity: normal\nconfidence: verified\ncreated: 2026-08-01T00:00:00Z\n"
+    "agent: user\n---\nSynthetic broken-pipe delta.\n",
+    encoding="utf-8",
+)
+os.utime(path, (marker + 0.001, marker + 0.001))
+PY
+before_broken=$(cat "$marker")
+python3 - "$TOOLS/bin/spine-packet" "$marker" "$VAULT" "$TOOLS" "$LOGS" <<'PY'
+import os,subprocess,sys
+packet,marker,vault,tools,logs=sys.argv[1:]
+read_fd,write_fd=os.pipe(); os.close(read_fd)
+env=os.environ.copy()
+env.update({"SPINE_ROOT":vault,"SPINE_TOOLS_DIR":tools,"SPINE_CONFIG_DIR":tools+"/config",
+            "SPINE_LOG_DIR":logs,"SPINE_NO_GATE":"1"})
+proc=subprocess.run([packet,"--project","alpha","--agent","contract"],
+                    env=env,stdout=write_fd,stderr=subprocess.PIPE,text=True,check=False)
+os.close(write_fd)
+if proc.returncode == 0:
+    raise SystemExit("FAIL: closed stdout sink returned success")
+PY
+[ "$(cat "$marker")" = "$before_broken" ] || fail "broken stdout advanced the delta marker"
+run_packet > "$TMP/broken-replay.out" 2> "$TMP/broken-replay.err"
+grep -Fq 'Broken pipe delta sentinel' "$TMP/broken-replay.out" \
+  || fail "delta lost after broken stdout instead of replaying"
+
+# Exercise the recovery path independently of delta and assert real content.
+cat > "$VAULT/alpha/facts/recent.md" <<'EOF'
+---
+type: fact
+title: Recent recovery sentinel
+summary: A newest record for the explicit recent-record path.
+status: active
+sensitivity: normal
+confidence: verified
+created: 2099-01-01T00:00:00Z
+agent: user
+---
+Synthetic recent record.
+EOF
+run_packet --no-delta --recent 1 > "$TMP/recent.out" 2> "$TMP/recent.err"
 recent_bytes=$(wc -c < "$TMP/recent.out" | tr -d ' ')
 [ "$recent_bytes" -le 4000 ] || fail "base packet plus recent records exceeded configured cap"
+grep -Fq -- "--- RECENT RECORDS of scope 'alpha'" "$TMP/recent.out" \
+  || fail "recent path did not emit its section"
+grep -Fq 'Recent recovery sentinel' "$TMP/recent.out" \
+  || fail "recent path did not emit the newest record"
 
 # Without the scope dictionary, a configured per-scope limit cannot be
 # validated. Delivery must stop instead of falling back to the larger default.

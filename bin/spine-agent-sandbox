@@ -1,17 +1,16 @@
 #!/bin/bash
-# spine-agent-sandbox — an isolated home for a third-party agent app.
+# spine-agent-sandbox — an isolated configuration home for an agent app.
 #
 # Connecting a model inside another app can inherit a broader agent profile
-# (projects, plugins, MCP connectors, sandbox grants, and memory access). An
-# isolated home breaks that inheritance: the app gets a clean profile with no
-# plugins, no connectors, and no access to the memory vault.
+# (projects, plugins, MCP connectors, and memories). This helper breaks that
+# configuration inheritance. It is not an OS security boundary and does not
+# block direct filesystem reads or writes allowed by the current user account.
 #
 # Usage:
 #   spine-agent-sandbox <app-name>      # create the home + show how to launch
 #   spine-agent-sandbox --list          # existing sandboxes
 set -u
 ROOT="$HOME/agent-sandboxes"
-MEMORY_ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 
 if [ "${1:-}" = "--list" ]; then
   echo "=== AGENT SANDBOXES ($ROOT)"
@@ -43,8 +42,6 @@ cat > "$CX/config.toml" << EOF
 # Do NOT add the memory vault, connectors or plugins here — the whole point of
 # this home is that a third-party app does NOT inherit the owner's working
 # environment.
-model = "gpt-5.6-sol"
-
 [features]
 memories = false
 
@@ -54,9 +51,7 @@ EOF
 fi
 mkdir -p "$BOX/workspace"
 
-# --- Claude Code: an empty profile (no MCP; verified 2026-07-28 — with
-# CLAUDE_CONFIG_DIR set it reports "No MCP servers configured" vs 5 in the
-# global profile).
+# --- Claude Code: an empty profile with no configured MCP servers.
 [ -f "$CC/.claude.json" ] || echo '{}' > "$CC/.claude.json"
 
 cat > "$BOX/LAUNCH.md" << EOF
@@ -74,12 +69,15 @@ or in a terminal before launching a CLI:
 
 What is inside:
 - codex-home/config.toml — no MCP, no plugins, memories=false,
-  writes only to $BOX/workspace (NOT to $MEMORY_ROOT)
+  with $BOX/workspace as the configured writable root
 - claude-home/ — an empty profile, 0 MCP servers
-- workspace/ — the only folder the app may write to
+- workspace/ — the intended working folder
 
-Memory access: DENIED by default (default-deny gate).
-If this app genuinely needs memory — the owner decides explicitly:
+Security boundary:
+- Spine command access is denied by the default-deny gate.
+- This helper does not block direct filesystem reads or writes. The app and
+  child processes retain whatever filesystem access the OS user permits.
+If this app genuinely needs Spine command access, the owner decides explicitly:
     spine-approve "<path fragment of the app>" "$NAME"
 EOF
 
@@ -88,6 +86,7 @@ echo
 echo "Launch the app like this:"
 echo "  CODEX_HOME=\"$CX\" CLAUDE_CONFIG_DIR=\"$CC\" open -a \"$NAME\""
 echo
-echo "Memory access for it is DENIED (default-deny gate)."
-echo "Grant it deliberately: spine-approve \"<path fragment>\" \"$NAME\""
+echo "Spine command access is DENIED (default-deny gate)."
+echo "Direct filesystem access is NOT blocked by this helper."
+echo "Grant Spine command access deliberately: spine-approve \"<path fragment>\" \"$NAME\""
 echo "Details: $BOX/LAUNCH.md"

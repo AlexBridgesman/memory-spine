@@ -194,4 +194,28 @@ if echo "$NO_MIRROR_OUT" | grep -Fq "only remote is a bare mirror"; then
   fail "--no-mirror printed a false mirror success claim"
 fi
 
+# The agent helper isolates configuration profiles, not OS filesystem access.
+# Verify both the generated disclosure and the actual boundary in a synthetic HOME.
+SANDBOX_HOME="$TMP/sandbox-home"
+SANDBOX_VAULT="$SANDBOX_HOME/AgentMemory"
+mkdir -p "$SANDBOX_VAULT"
+printf 'synthetic readable sentinel\n' > "$SANDBOX_VAULT/direct-read-sentinel"
+HOME="$SANDBOX_HOME" SPINE_ROOT="$SANDBOX_VAULT" \
+  "$TOOLS/bin/spine-agent-sandbox" contract-agent >/dev/null
+SANDBOX_BOX="$SANDBOX_HOME/agent-sandboxes/contract-agent"
+grep -Fq 'Spine command access is denied' "$SANDBOX_BOX/LAUNCH.md" \
+  || fail "agent helper did not disclose the Spine-mediated gate boundary"
+grep -Fq 'does not block direct filesystem reads or writes' "$SANDBOX_BOX/LAUNCH.md" \
+  || fail "agent helper did not disclose direct filesystem access"
+if grep -Fq 'model = ' "$SANDBOX_BOX/codex-home/config.toml"; then
+  fail "agent helper pinned an environment-specific model"
+fi
+CODEX_HOME="$SANDBOX_BOX/codex-home" CLAUDE_CONFIG_DIR="$SANDBOX_BOX/claude-home" \
+  python3 - "$SANDBOX_VAULT/direct-read-sentinel" <<'PY'
+from pathlib import Path
+import sys
+if Path(sys.argv[1]).read_text(encoding="utf-8") != "synthetic readable sentinel\n":
+    raise SystemExit("FAIL: direct-read boundary probe did not reach its sentinel")
+PY
+
 echo "installer-test: PASS"

@@ -9,8 +9,17 @@
   publishing a packet that cannot fit every pin. Retained records are counted
   by identity, so blocked facts/decisions cannot inflate health statistics.
 - `spine-gen` publishes one atomic all-scope statistics snapshot even for a
-  targeted invocation. Health rejects missing, stale, malformed, duplicate,
-  unexpected, or incomplete scope evidence before applying starvation policy.
+  targeted invocation and invalidates the previous snapshot before publishing
+  any packet. Health rejects missing, input-stale, malformed, duplicate,
+  unexpected, or incomplete scope evidence before applying starvation policy;
+  quiet unchanged vaults do not fail a wall-clock freshness timer.
+- Delta byte trimming preserves an explicit omission count. The per-agent
+  cursor advances only after stdout flushes successfully, so a broken consumer
+  replays rather than silently consuming undelivered changes.
+- Production sync resolves Python through `SPINE_PYTHON`, standard install
+  locations, or `PATH`; BSD/GNU stat fallbacks isolate failed probe output.
+- `spine-agent-sandbox` is documented as configuration-profile isolation, not
+  filesystem confinement, and generated profiles no longer pin a model name.
 - Dedicated packet-limit, final-delivery, and health-boundary contracts run in
   the macOS/Linux CI matrix, and the opt-in example is covered by installer verification.
 - README, architecture, technical reference, and machine-readable mirrors use

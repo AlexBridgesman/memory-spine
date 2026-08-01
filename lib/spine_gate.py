@@ -103,9 +103,8 @@ _NO_SUGGEST = {"zsh", "bash", "sh", "dash", "python", "python3", "node", "env",
 
 def _suggest_pattern(chain):
     """A ready-to-paste pattern for spine-approve instead of a "<path fragment>"
-    placeholder (UX fix 2026-07-30: the owner once received an alert with the
-    literal placeholder and had nothing to copy). The best pattern is the .app
-    bundle name anywhere in the entry (it also catches
+    placeholder. The best pattern is the .app bundle name anywhere in the
+    entry (it also catches
     `node /Applications/SomeAgent.app/.../agent.js`); otherwise the executable
     basename, SKIPPING bare shells/interpreters: suggesting "zsh" = advising
     the owner to open memory to every script in the system."""
@@ -156,8 +155,7 @@ BINDIR = os.path.join(TOOLS, "bin")
 
 def _parent_exe():
     """Executable path of the PARENT without `ps` — the fallback for sandboxes
-    where ps is unavailable (seen with Codex under its seatbelt profile,
-    2026-07-29). libproc.proc_pidpath is always available on macOS."""
+    where ps is unavailable. libproc.proc_pidpath is available on macOS."""
     try:
         import ctypes
         lib = ctypes.CDLL("/usr/lib/libSystem.dylib")
@@ -174,9 +172,8 @@ def _is_own_tool(entry):
     tokens: argv[0] = the executable, argv[1] = the script for an interpreter
     (`/bin/bash .../bin/spine-health`, `/usr/bin/python3 .../bin/spine-recall`).
     A `bash -c "true spine-recall; ..."` bypass does not slip through here:
-    its argv[1] is "-c". Found by an audit on 2026-07-28 — the previous
-    pattern (`allow spine-`) self-authorized anyone who merely ran one of our
-    own tools."""
+    its argv[1] is "-c"; a substring match would self-authorize callers that
+    merely mention one of the tools."""
     for tok in entry.split()[:2]:
         if tok.startswith(BINDIR + "/") or tok.startswith(BINDIR + "\\"):
             return True
@@ -197,23 +194,18 @@ def check(action, scope=None, agent=None):
     hay = " ".join(chain).lower()
     allow, deny = _load_rules()
 
-    # An EMPTY CHAIN is NOT an attacker (bug 2026-07-29: a legitimate agent
-    # running inside its own seatbelt sandbox could not see `ps`, so
-    # caller_chain() returned [] and the agent got DENY as an "unknown
-    # caller"). The caller data is simply MISSING — so decide on an
-    # independent signal: the parent process we can read directly through the
-    # /proc analogue, or, if even that is gone, fall back to the parent
-    # executable path.
+    # An empty chain means caller data is missing, not that the caller is
+    # hostile. Use an independent parent-process signal before applying the
+    # explicit no-chain policy.
     if not chain:
         parent = _parent_exe()
         if parent:
             chain = [parent]
             hay = parent.lower()
         else:
-            # No caller data at all. The trade-off is deliberate: a silent
-            # DENIAL breaks legitimate sandboxed agents (exactly what happened
-            # on 2026-07-29), while a silent allow breaks security. So we
-            # allow, but LOUDLY: a distinct verdict in the log + an owner alert.
+            # No caller data at all. Both silent denial and silent allowance
+            # are unsafe defaults, so allow with a distinct log verdict and an
+            # owner alert.
             _log("ALLOW-NOCHAIN", action, scope, agent, ["(chain unavailable)"],
                  "ps and proc_pidpath unavailable — the caller cannot be identified")
             _alert(f"{action} (caller NOT identified)", scope, agent,

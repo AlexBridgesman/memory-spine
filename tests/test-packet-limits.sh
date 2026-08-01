@@ -232,7 +232,7 @@ SPINE_ROOT="$VAULT" SPINE_TOOLS_DIR="$TOOLS" "$TOOLS/bin/spine-gen" default \
 stats_rc=$?
 set -e
 [ "$stats_rc" -ne 0 ] || fail "statistics write failure was silently accepted"
-grep -Fq 'cannot publish packet statistics' "$TMP/stats-write.err" \
+grep -Eq 'cannot (invalidate previous|publish) packet statistics' "$TMP/stats-write.err" \
   || fail "statistics write failure lacked an actionable diagnostic"
 
 # Successful generation never drops pins. If pins alone cannot fit, fail before

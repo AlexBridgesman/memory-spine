@@ -33,8 +33,19 @@ if [ -z "$PYTHON" ]; then
   PYTHON=false
   ALERTS="$ALERTS\n- python3 unavailable -- packet and status health checks are incomplete"
 fi
-# BSD (macOS) stat first, GNU stat as fallback so cron/systemd on Linux works too
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+# BSD (macOS) stat first, GNU stat as fallback so cron/systemd on Linux works
+# too. Capture the BSD probe: GNU stat can print a filesystem report for one
+# operand before returning non-zero for the other, which must not contaminate
+# the GNU epoch fallback.
+mtime() {
+  local mt
+  if mt=$(stat -f %m "$1" 2>/dev/null); then
+    case "$mt" in ''|*[!0-9]*) ;;
+      *) printf '%s\n' "$mt"; return 0 ;;
+    esac
+  fi
+  stat -c %Y "$1" 2>/dev/null
+}
 
 # 1) the sync/push channel.
 # The old criterion "last push >24h" gave false positives in quiet periods with

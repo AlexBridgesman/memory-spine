@@ -148,9 +148,10 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
     root = home / "AgentMemory"
     logs = base / "logs"
     notify_log = base / "notify.log"
+    fake_bin = base / "fake-bin"
     for directory in (tools / "bin", tools / "lib", tools / "config",
                       root / "_index", root / "config", root / "alpha" / "facts",
-                      root / "beta" / "facts", logs):
+                      root / "beta" / "facts", logs, fake_bin):
         directory.mkdir(parents=True, exist_ok=True)
     shutil.copy2(repo / "bin" / "spine-health", tools / "bin" / "spine-health")
     shutil.copy2(repo / "lib" / "spine_packet_health.py", tools / "lib" / "spine_packet_health.py")
@@ -161,6 +162,26 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
         encoding="utf-8",
     )
     notifier.chmod(0o755)
+    # GNU stat may print a filesystem report for the valid operand in
+    # `stat -f %m FILE` before exiting non-zero for the missing `%m` operand.
+    # Reproduce that noisy failed probe on both CI platforms so the fallback
+    # cannot regress into a mixed, non-numeric mtime again.
+    fake_stat = fake_bin / "stat"
+    fake_stat.write_text(
+        "#!/bin/sh\n"
+        "if [ \"${1:-}\" = -f ]; then\n"
+        "  printf 'simulated GNU filesystem report\\n'\n"
+        "  exit 1\n"
+        "fi\n"
+        "if [ \"${1:-}\" = -c ]; then\n"
+        "  if [ \"$(uname -s)\" = Darwin ]; then\n"
+        "    exec \"${SPINE_TEST_REAL_STAT:?}\" -f %m \"$3\"\n"
+        "  fi\n"
+        "fi\n"
+        "exec \"${SPINE_TEST_REAL_STAT:?}\" \"$@\"\n",
+        encoding="utf-8",
+    )
+    fake_stat.chmod(0o755)
     (root / "config" / "projects.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     (tools / "config" / "projects.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     stats = root / "_index" / ".packet-stats.tsv"
@@ -171,9 +192,11 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
         "SPINE_TOOLS_DIR": str(tools),
         "SPINE_LOG_DIR": str(logs),
         "SPINE_TEST_NOTIFY_LOG": str(notify_log),
+        "SPINE_TEST_REAL_STAT": shutil.which("stat") or "/usr/bin/stat",
         "SPINE_GIT": shutil.which("git") or "git",
         "SPINE_PYTHON": sys.executable,
         "SPINE_PACKET_STATS_MAX_AGE": "3600",
+        "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
     })
 
     def run_health(stats_bytes: bytes | None, *, stale: bool = False) -> tuple[subprocess.CompletedProcess[str], str]:

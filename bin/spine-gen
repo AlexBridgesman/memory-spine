@@ -43,6 +43,7 @@ def _load_list(name):
 
 PROJECTS = _load_list("projects.txt")
 TYPEDIRS = ["decisions", "facts", "threads", "artifacts"]
+CONFIDENCE = {"verified", "reported", "candidate", "legacy", "untrusted"}
 INDEX_LINES = 200
 
 
@@ -132,6 +133,8 @@ def in_packet(r):
     if r.get("status") not in ("active", "blocked"): return False
     if r.get("sensitivity") != "normal": return False
     if r.get("type") == "artifact": return False  # no ARTIFACTS section in the packet — do not count them
+    confidence = r.get("confidence")
+    if confidence not in CONFIDENCE or confidence == "untrusted": return False
 
     # pinned env-facts bypass the promotion gate (2026-07-22, anti-compaction-amnesia):
     # they are set deliberately and rarely (spine-new --pin) and must be in the packet
@@ -143,8 +146,7 @@ def in_packet(r):
     if r.get("type") == "thread":
         # the coordination channel passes the gate, BUT untrusted (external content)
         # never rides the auto-injection (design v3.1, Security rule 1)
-        return r.get("confidence") != "untrusted"
-    if r.get("confidence") == "untrusted": return False
+        return True
     if r.get("reviewed_by"): return True
     return r.get("confidence") in ("reported", "verified")
 

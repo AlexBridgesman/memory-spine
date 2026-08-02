@@ -368,6 +368,10 @@ fi
 find "$MEMORY_ROOT" -name '*.md' -not -path '*/.git/*' -print0 | xargs -0 "$TOOLS_DIR/bin/spine-secrets-lint"
 "$TOOLS_DIR/bin/spine-gen" >/dev/null
 
+if [ "$MIRROR" = "0" ] && [ -d "$MEMORY_ROOT/.git" ] \
+   && git -C "$MEMORY_ROOT" remote get-url origin >/dev/null 2>&1; then
+  git -C "$MEMORY_ROOT" remote remove origin
+fi
 
 if [ "$GIT_INIT" = "1" ]; then
   FRESH_GIT=0

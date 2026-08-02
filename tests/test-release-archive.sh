@@ -29,7 +29,8 @@ cmp -s "$A" "$B" || { echo "FAIL: archive inherited ambient tar.umask" >&2; exit
 
 # Adding a ref later must not change the bytes produced from the same exact SHA.
 git -C "$CLONE" tag adversarial-late-tag "$SHA"
-build_with_umask 0022 "$TMP/tagged"
+git -C "$CLONE" config tar.umask 0022
+"$CLONE/scripts/build-release.sh" adversarial-late-tag "$TMP/tagged" >/dev/null
 set -- "$TMP/tagged"/*.tar.gz; TAGGED="$1"
 [ "$(basename "$A")" = "$(basename "$TAGGED")" ] \
   || { echo "FAIL: exact-SHA archive name changed after adding a tag" >&2; exit 1; }

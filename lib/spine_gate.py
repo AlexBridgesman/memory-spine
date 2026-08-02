@@ -7,10 +7,10 @@ Threat model, honestly:
     the vault remains a plain directory. That is why rule #1 (never store
     secret VALUES in memory) stays the primary defense, not this gate.
 
-Policy for identified callers with a populated allowlist: unknown caller ->
-refusal, with best-effort logging/notification. Missing caller identity or a
-missing allowlist follows documented fail-open availability branches. This is a
-Spine-tool guardrail, not operating-system access control.
+Policy for identified callers: unknown caller or a missing/empty allowlist ->
+refusal, with best-effort logging/notification. Spine's own tool chain remains
+allowed by executable path. Missing caller identity follows the documented
+availability branch. This is a Spine-tool guardrail, not OS access control.
 """
 import os
 import re
@@ -219,17 +219,19 @@ def check(action, scope=None, agent=None):
             return False, (f"spine: memory access BLOCKED — the caller is denylisted "
                            f"({label}). This is the owner's decision; only the owner can lift it.")
 
-    if not allow:
-        # dictionary missing/empty — do not brick the system, but shout
-        _log("ALLOW-NOLIST", action, scope, agent, chain, "allowlist missing")
-        return True, ""
-
     # Spine's internal chain (spine-backup -> spine-maintain -> ..., keeper,
     # selftest): allowed by the ACTUAL executable path, not by command-line text
     for entry in chain:
         if _is_own_tool(entry):
             _log("ALLOW", action, scope, agent, chain, "Spine's own tool")
             return True, ""
+
+    if not allow:
+        _log("DENY", action, scope, agent, chain, "allowlist missing or empty")
+        _alert(action, scope, agent, chain)
+        return False, ("spine: memory access BLOCKED — the owner allowlist is missing or empty.\n"
+                       "  Spine's own internal tool chain remains available.\n"
+                       "  The owner approves a caller with: spine-approve \"<path fragment>\" \"label\"")
 
     for pattern, label in allow:
         if pattern.lower() in hay:

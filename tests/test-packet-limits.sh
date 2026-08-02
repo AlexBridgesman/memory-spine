@@ -300,7 +300,7 @@ grep -Fq 'packet snapshot unavailable' "$TMP/stale-overflow-packet.err" \
 SUPER_TOOLS="$TMP/supersede-tools"
 SUPER_VAULT="$TMP/supersede-vault"
 mkdir -p "$SUPER_TOOLS/bin" "$SUPER_TOOLS/lib" "$SUPER_TOOLS/config" \
-  "$SUPER_VAULT/alpha/facts"
+  "$SUPER_VAULT/alpha/facts" "$SUPER_VAULT/alpha/threads"
 cp "$REPO/bin/spine-gen" "$SUPER_TOOLS/bin/spine-gen"
 cp "$REPO/lib/"*.py "$SUPER_TOOLS/lib/"
 chmod +x "$SUPER_TOOLS/bin/spine-gen"
@@ -335,6 +335,46 @@ agent: user
 ---
 Synthetic external content.
 EOF
+cat > "$SUPER_VAULT/alpha/facts/missing-reviewed--01J00000000000000000000004.md" <<'EOF'
+---
+type: fact
+title: Missing trust reviewed content
+summary: Missing trust metadata must not ride the reviewed shortcut.
+status: active
+sensitivity: normal
+reviewed_by: owner
+created: 2026-08-01T00:00:31Z
+agent: user
+---
+Synthetic malformed content.
+EOF
+cat > "$SUPER_VAULT/alpha/facts/invalid-pinned--01J00000000000000000000005.md" <<'EOF'
+---
+type: fact
+title: Invalid trust pinned content
+summary: Malformed trust metadata must not ride the pinned shortcut.
+status: active
+sensitivity: normal
+confidence: VERIFIED
+pinned: true
+created: 2026-08-01T00:00:32Z
+agent: user
+---
+Synthetic malformed content.
+EOF
+cat > "$SUPER_VAULT/alpha/threads/invalid-thread--01J00000000000000000000006.md" <<'EOF'
+---
+type: thread
+title: Invalid trust thread content
+summary: Malformed trust metadata must not ride the thread shortcut.
+status: active
+sensitivity: normal
+confidence: malformed
+created: 2026-08-01T00:00:33Z
+agent: user
+---
+Synthetic malformed content.
+EOF
 write_replacement() {
   confidence="$1"
   cat > "$REPLACEMENT" <<EOF
@@ -360,6 +400,11 @@ grep -Fq 'Promoted current knowledge' "$SUPER_VAULT/_index/packet-alpha.md" \
 if grep -Fq 'Untrusted reviewed content' "$SUPER_VAULT/_index/packet-alpha.md"; then
   fail "reviewed_by bypassed the untrusted packet boundary"
 fi
+for hidden in 'Missing trust reviewed content' 'Invalid trust pinned content' 'Invalid trust thread content'; do
+  if grep -Fq "$hidden" "$SUPER_VAULT/_index/packet-alpha.md"; then
+    fail "malformed trust metadata bypassed a packet shortcut: $hidden"
+  fi
+done
 if grep -Fq 'Replacement knowledge' "$SUPER_VAULT/_index/packet-alpha.md"; then
   fail "candidate replacement bypassed the packet promotion gate"
 fi

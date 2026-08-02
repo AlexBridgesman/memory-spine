@@ -341,13 +341,31 @@ F16=$("$PY" "$BIN/spine-new" --type fact --project "$FIRST_SCOPE" --agent "$TEST
   --title "selftest promote reviewed transient" --confidence verified \
   --body "review me. [[$FIRST_SCOPE]]" 2>/dev/null | tail -1)
 [ -f "$F16" ] || bad "T16 setup: transient was not created"
-DR16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent "$TEST_AGENT" \
-  --reviewed-by-owner --reason "selftest T16 dry" --dry-run 2>&1)
+AUTH16="$ROOT/_index/.selftest-promotion-authority.$$"
+mkdir -p "$AUTH16/lib" "$AUTH16/config"
+cp "$TOOLS/lib/spine_gate.py" "$TOOLS/lib/spine_paths.py" "$AUTH16/lib/"
+printf 'allow\tselftest-authority-runner.py\tselftest promotion fixture\tselftest\t2026-08-01\n' \
+  > "$AUTH16/config/agent-allowlist.tsv"
+cat > "$AUTH16/selftest-authority-runner.py" <<'PY'
+import subprocess
+import sys
+
+raise SystemExit(subprocess.call([sys.executable, *sys.argv[1:]]))
+PY
+T16OUT="$ROOT/_index/.selftest-promote-output.$$"
+SPINE_TOOLS_DIR="$AUTH16" "$PY" "$AUTH16/selftest-authority-runner.py" \
+  "$BIN/spine-promote" "$F16" --confidence verified --agent "$TEST_AGENT" \
+  --reviewed-by-owner --reason "selftest T16 dry" --dry-run > "$T16OUT.dry" 2>&1 || true
+DR16=$(<"$T16OUT.dry")
 DRYW16=$(grep -c "^reviewed_by:" "$F16" 2>/dev/null)   # must still be 0 after dry-run
-OUT16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent "$TEST_AGENT" \
-  --reviewed-by-owner --reason "selftest T16" 2>&1)
-NOOP16=$("$PY" "$BIN/spine-promote" "$F16" --confidence verified --agent "$TEST_AGENT" \
-  --reviewed-by-owner --reason "selftest T16 repeat" 2>&1)
+SPINE_TOOLS_DIR="$AUTH16" "$PY" "$AUTH16/selftest-authority-runner.py" \
+  "$BIN/spine-promote" "$F16" --confidence verified --agent "$TEST_AGENT" \
+  --reviewed-by-owner --reason "selftest T16" > "$T16OUT.run" 2>&1 || true
+OUT16=$(<"$T16OUT.run")
+SPINE_TOOLS_DIR="$AUTH16" "$PY" "$AUTH16/selftest-authority-runner.py" \
+  "$BIN/spine-promote" "$F16" --confidence verified --agent "$TEST_AGENT" \
+  --reviewed-by-owner --reason "selftest T16 repeat" > "$T16OUT.repeat" 2>&1 || true
+NOOP16=$(<"$T16OUT.repeat")
 if echo "$DR16" | grep -qF "confidence unchanged (verified), +reviewed_by: owner" \
    && [ "${DRYW16:-x}" = "0" ] \
    && echo "$OUT16" | grep -qF "confidence unchanged (verified), +reviewed_by: owner" \
@@ -360,6 +378,8 @@ else
   bad "T16 promote loses/misreports reviewed_by (dry:$(echo "$DR16"|head -1) run:$(echo "$OUT16"|tail -1) rep:$(echo "$NOOP16"|head -1))"
 fi
 rm -f "$F16" 2>/dev/null
+rm -f "$T16OUT.dry" "$T16OUT.run" "$T16OUT.repeat" 2>/dev/null
+rm -rf "$AUTH16" 2>/dev/null
 find "$ROOT/$FIRST_SCOPE" -name "*selftest-promote-reviewed*" -delete 2>/dev/null
 
 echo "selftest: PASS $PASS / FAIL $FAIL"

@@ -327,6 +327,12 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
             "complete statistics with a missing packet did not alert")
     packets[1].write_text("synthetic packet\n", encoding="utf-8")
 
+    packets[1].write_bytes(b"")
+    proc, health_log = run_health(b"alpha\t20\t20\t1\nbeta\t20\t20\t1\n")
+    require("packet statistics missing, stale, incomplete, or unreadable" in health_log,
+            "complete statistics with an empty packet did not alert")
+    packets[1].write_text("synthetic packet\n", encoding="utf-8")
+
     proc, health_log = run_health(b"alpha\t20\t20\t1\nbeta\t20\t20\t1\n", stale=True)
     require("packet statistics missing, stale, incomplete, or unreadable" not in health_log,
             "quiet unchanged vault rejected an old but current statistics snapshot")

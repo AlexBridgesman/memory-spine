@@ -54,6 +54,7 @@ jobs:
           tests/test-packet-limits.sh
           tests/test-packet-delivery.sh
           tests/test-hook-delivery.sh
+          tests/test-maintain.sh
           python3 tests/test-packet-health.py
           python3 tests/test-recall-synonyms.py
           benchmarks/recall/run.py

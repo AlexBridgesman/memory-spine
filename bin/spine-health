@@ -228,7 +228,7 @@ else
       while IFS= read -r project; do
         case "$project" in ''|[[:space:]]*'#'*) continue ;; esac
         packet="$ROOT/_index/packet-$project.md"
-        if [ -f "$packet" ]; then
+        if [ -s "$packet" ]; then
           [ "$packet" -nt "$PSTATS" ] && packet_input_newer=1
         else
           packet_stats_ok=0

@@ -353,6 +353,9 @@ def main():
     except OSError as e:
         sys.stderr.write(f"spine-packet: cannot read {pk}: {e}\n")
         return 0
+    if not output.strip():
+        sys.stderr.write(f"spine-packet: packet for '{project}' is empty; run spine-gen\n")
+        return 1
     packet_bytes = delivery_limit(project, PACKET_LIMITS)
     if len(output.encode()) > packet_bytes:
         sys.stderr.write(

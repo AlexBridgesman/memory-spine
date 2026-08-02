@@ -60,7 +60,7 @@ problem() { ISSUES=$((ISSUES+1)); say "PROBLEM: $*"; }
 say "=== spine-maintain (mechanical) $(date '+%F %T') ==="
 
 # 1) regen INDEX/packet
-"$BIN/spine-gen" >> "$REPORT" 2>&1 || problem "spine-gen failed"
+"$PYTHON" "$BIN/spine-gen" >> "$REPORT" 2>&1 || problem "spine-gen failed"
 
 # 2) broken wikilinks + orphans (a record without a single [[link]])
 "$PYTHON" - "$ROOT" >> "$REPORT" 2>&1 << 'PYEOF'
@@ -224,9 +224,10 @@ if [ -n "$SNAPROOT" ] && { [ -f "$BACKUP_MARKER" ] || [ -d "$SNAPROOT" ]; }; the
       SNAP_TS=$(cat "$SNAP/.snapshot-created" 2>/dev/null || echo 0)
     else
       SNAP_DATE=${SNAP##*/SNAP-}
-      SNAP_TS=$(/bin/date -j -f "%Y-%m-%d" "$SNAP_DATE" "+%s" 2>/dev/null || stat -f %m "$SNAP")
+      SNAP_TS=$(/bin/date -j -f "%Y-%m-%d" "$SNAP_DATE" "+%s" 2>/dev/null \
+        || spine_file_mtime "$SNAP")
     fi
-    case "$SNAP_TS" in ''|*[!0-9]*) SNAP_TS=$(stat -f %m "$SNAP") ;; esac
+    case "$SNAP_TS" in ''|*[!0-9]*) SNAP_TS=$(spine_file_mtime "$SNAP" || echo 0) ;; esac
     AGE_D=$(( ( $(date +%s) - SNAP_TS ) / 86400 ))
     [ "$AGE_D" -gt 2 ] && problem "snapshot older than 2 days ($SNAP)" || say "snapshot fresh: $SNAP"
   else

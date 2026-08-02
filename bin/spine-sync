@@ -250,6 +250,10 @@ fi
 
 ORIGIN_URL=$("$GIT" remote get-url origin 2>/dev/null || true)
 if [ -n "$ORIGIN_URL" ]; then
+  case "$ORIGIN_URL" in
+    /*|file://*) ;;
+    *) log "ALERT: refusing non-local origin: $ORIGIN_URL"; exit 1 ;;
+  esac
   ensure_not_behind_origin || exit 1
 else
   # Local-only mode is supported: commits still land in the vault's own history.

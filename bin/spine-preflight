@@ -40,6 +40,9 @@ fi
 REMOTE_URL=$("$GIT" -C "$ROOT" remote get-url origin 2>/dev/null || true)
 if [ -z "$REMOTE_URL" ]; then
   echo "PREFLIGHT INFO: no origin remote; sync will commit locally without pushing"
+elif [[ "$REMOTE_URL" != /* ]] && [[ "$REMOTE_URL" != file://* ]]; then
+  echo "PREFLIGHT FAIL: network origin is not permitted: $REMOTE_URL"
+  FAIL=1
 elif [[ "$REMOTE_URL" == /Volumes/* ]]; then
   # A removable volume as origin means every unmount silently breaks sync
   echo "PREFLIGHT FAIL: origin still points at a removable volume: $REMOTE_URL"

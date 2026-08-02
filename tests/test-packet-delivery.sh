@@ -56,6 +56,20 @@ initial_bytes=$(wc -c < "$TMP/initial.out" | tr -d ' ')
 marker="$LOGS/markers/last-fire-alpha-contract"
 [ -f "$marker" ] || fail "initial delivery did not establish the per-agent marker"
 
+cp "$VAULT/_index/packet-alpha.md" "$TMP/packet-alpha.saved"
+empty_before=$(cat "$marker")
+: > "$VAULT/_index/packet-alpha.md"
+set +e
+run_packet > "$TMP/empty.out" 2> "$TMP/empty.err"
+empty_rc=$?
+set -e
+mv "$TMP/packet-alpha.saved" "$VAULT/_index/packet-alpha.md"
+[ "$empty_rc" -ne 0 ] || fail "empty packet returned success"
+[ ! -s "$TMP/empty.out" ] || fail "empty packet emitted bytes"
+[ "$(cat "$marker")" = "$empty_before" ] || fail "empty packet advanced the delivery cursor"
+grep -Fq "packet for 'alpha' is empty" "$TMP/empty.err" \
+  || fail "empty packet did not produce a fail-closed diagnostic"
+
 # Hook delivery is two-phase: packet rendering stages a cursor, and only the
 # caller that successfully writes to the real session sink may publish it.
 pending_marker="$LOGS/markers/.pending-contract"

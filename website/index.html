@@ -493,7 +493,7 @@
       <div class="step glass rev" style="--d:200ms">
         <div class="num">03</div>
         <h3 data-i18n="st3h">Distill honestly</h3>
-        <p data-i18n="st3p">Each scope compiles into a bounded packet with a 14 KB default and an optional per-scope cap: pins first, then decisions, facts, blockers. Every truncation carries an honest counter.</p>
+        <p data-i18n="st3p">Each scope compiles into a bounded packet with a 14 KB default and an optional per-scope cap: pins first, then mutually exclusive blocker, thread, decision, and fact groups. Every truncation carries an honest counter.</p>
       </div>
       <div class="step glass rev" style="--d:300ms">
         <div class="num">04</div>
@@ -522,7 +522,7 @@
         <p data-i18n="c3p">Inbox for topics with no home, owner triage, a candidate-promotion workflow, and pins for environment truths.</p>
       </div>
       <div class="cell glass rev">
-        <h3 data-i18n="c4h">Access gate from a real incident</h3>
+        <h3 data-i18n="c4h">Explicit access guardrail</h3>
         <p data-i18n="c4p">Spine-mediated access now checks identified callers against a process-ancestry allowlist. The allowlist is owner-managed by policy; filesystem permissions remain the enforcement boundary.</p>
       </div>
       <div class="cell glass rev" style="--d:80ms">
@@ -649,13 +649,13 @@ const I18N = { ua: {
   c_eye: "Процес", c_h: "Цикл памʼяті",
   st1h: "Запис на чекпоінтах", st1p: "Агенти фіксують рішення і факти в момент, коли вони стались — тільки через spine-new: валідація, скан секретів, анти-дубль.",
   st2h: "Один append-oriented канон", st2p: "Один запис = один Markdown-файл у ~/AgentMemory. За протоколом записи замінюються через supersede, а spine-sync може комітити за розкладом власника.",
-  st3h: "Чесна дистиляція", st3p: "Кожен scope збирається в обмежений packet: 14 КБ за замовчуванням або опційний ліміт для scope. Спершу піни, далі рішення, факти, блокери; кожна обрізка — з чесним лічильником.",
+  st3h: "Чесна дистиляція", st3p: "Кожен scope збирається в обмежений packet: 14 КБ за замовчуванням або опційний ліміт для scope. Спершу піни, далі взаємовиключні групи блокерів, тредів, рішень і фактів; кожна обрізка — з чесним лічильником.",
   st4h: "Інтеграція з кожним агентом", st4p: "Claude Code може отримувати пакет через hook. Інші агенти завантажують його явно; універсальної автоінʼєкції продукт не заявляє.",
   d_eye: "Обмеження сформульовано явно", d_h: "Рішення, закодовані в інструментах і тестах",
   c1h: "Файли з локальною git-історією", c1p: "Git дає локальну історію й аудит; резервні копії працюють лише після налаштування та перевірки. <b>За протоколом знання замінюються новим записом, а не стираються непомітно.</b>",
   c2h: "Посилання на секрети, не значення", c2p: "Політика памʼяті тримає лише «назва + де лежить». Легкий сканер перевіряє кожен запис; gitleaks додає захист у pre-commit і CI.",
   c3h: "Життєвий цикл знань", c3p: "Inbox для тем без дому, тріаж власником, workflow промоції кандидатів і піни для env-істин.",
-  c4h: "Гейт із реального інциденту", c4p: "Доступ через Spine тепер звіряє ідентифікованих викликачів з allowlist-ом за ланцюгом процесів. За політикою allowlist веде власник; межею примусу лишаються права файлової системи.",
+  c4h: "Явний запобіжник доступу", c4p: "Доступ через Spine тепер звіряє ідентифікованих викликачів з allowlist-ом за ланцюгом процесів. За політикою allowlist веде власник; межею примусу лишаються права файлової системи.",
   c5h: "Маркування недовіреного контенту", c5p: "Пакет позначено як дані, а не інструкції. Записи з рівнем untrusted не потрапляють у згенеровані пакети.",
   c6h: "Операційний набір", c6p: "Інструменти sync/backup/health/digest; dead-letter черга; selftest із 18 перевірок; алерти голодування; атомарні записи.",
   v_eye: "Чесне порівняння", v_h: "Проти типових підходів", t_l: "Замість", t_cap: "Порівняння типових підходів до памʼяті з Memory Spine",

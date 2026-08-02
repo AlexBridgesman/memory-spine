@@ -35,6 +35,8 @@ MIRROR=$(HOME="$APPLY_HOME" bash -c \
   '. "$1"; printf "%s/AgentMemory.git\n" "$(spine_default_remote_root)"' _ \
   "$TOOLS/lib/spine_paths.sh")
 [ -x "$TOOLS/bin/spine-selftest" ] || fail "tools were not installed"
+[ -f "$TOOLS/lib/spine_packet_limits.py" ] || fail "shared packet-limit module was not installed"
+[ -f "$TOOLS/lib/spine_packet_health.py" ] || fail "packet-health module was not installed"
 [ -d "$VAULT/.git" ] || fail "vault git repository was not initialized"
 assert_line alpha "$TOOLS/config/projects.txt"
 assert_line beta "$TOOLS/config/projects.txt"
@@ -42,6 +44,11 @@ assert_line inbox "$TOOLS/config/projects.txt"
 assert_line agent-one "$TOOLS/config/agents.txt"
 [ -f "$TOOLS/config/packet-limits.conf.example" ] || fail "packet-limit example was not installed"
 [ ! -e "$TOOLS/config/packet-limits.conf" ] || fail "installer enabled packet limits without owner opt-in"
+grep -Fq 'Memory Spine installed — genesis record' "$VAULT/_index/packet-alpha.md" \
+  || fail "fresh install packet omitted the genesis record"
+grep -Eq '^alpha[[:space:]]+[1-9][0-9]*[[:space:]]+[1-9][0-9]*[[:space:]]+1$' \
+  "$VAULT/_index/.packet-stats.tsv" \
+  || fail "fresh install statistics did not include the genesis fact"
 
 # An upgrade without explicit list flags preserves owner-maintained dictionaries byte-for-byte.
 printf 'alpha\nbeta\ninbox\nowner-scope\n' > "$TOOLS/config/projects.txt"
@@ -191,5 +198,143 @@ echo "$NO_MIRROR_OUT" | grep -Fq "Mirror:      disabled" || fail "--no-mirror pl
 if echo "$NO_MIRROR_OUT" | grep -Fq "only remote is a bare mirror"; then
   fail "--no-mirror printed a false mirror success claim"
 fi
+HOME="$NO_MIRROR_HOME" "$NO_MIRROR_HOME/dev/memory-spine/bin/spine-preflight" >/dev/null \
+  || fail "--no-mirror install failed preflight"
+HOME="$NO_MIRROR_HOME" "$NO_MIRROR_HOME/dev/memory-spine/bin/spine-sync" \
+  || fail "--no-mirror local-only sync failed"
+git -C "$NO_MIRROR_HOME/AgentMemory" remote add origin https://example.invalid/memory.git
+HOME="$NO_MIRROR_HOME" "$REPO/install.sh" --apply --yes --no-mirror \
+  --projects alpha --agents agent-one,user >/dev/null
+[ -z "$(git -C "$NO_MIRROR_HOME/AgentMemory" remote)" ] \
+  || fail "--no-mirror upgrade retained an existing network origin"
+git -C "$NO_MIRROR_HOME/AgentMemory" remote add origin https://example.invalid/memory.git
+if HOME="$NO_MIRROR_HOME" "$NO_MIRROR_HOME/dev/memory-spine/bin/spine-preflight" >/dev/null 2>&1; then
+  fail "preflight accepted a network origin"
+fi
+if HOME="$NO_MIRROR_HOME" "$NO_MIRROR_HOME/dev/memory-spine/bin/spine-sync" >/dev/null 2>&1; then
+  fail "sync accepted a network origin"
+fi
+git -C "$NO_MIRROR_HOME/AgentMemory" remote remove origin
+
+# --no-git-init is an explicit non-sync mode: preflight succeeds and sync is a
+# truthful no-op instead of entering a broken Git chain.
+NO_GIT_HOME="$TMP/no-git-home"
+mkdir -p "$NO_GIT_HOME"
+HOME="$NO_GIT_HOME" "$REPO/install.sh" --apply --yes --no-git-init --no-mirror \
+  --projects alpha --agents agent-one,user >/dev/null
+[ ! -e "$NO_GIT_HOME/AgentMemory/.git" ] || fail "--no-git-init created a Git repository"
+HOME="$NO_GIT_HOME" "$NO_GIT_HOME/dev/memory-spine/bin/spine-preflight" >/dev/null \
+  || fail "--no-git-init install failed preflight"
+HOME="$NO_GIT_HOME" "$NO_GIT_HOME/dev/memory-spine/bin/spine-sync" \
+  || fail "--no-git-init sync was not a clean no-op"
+
+# The agent helper isolates configuration profiles, not OS filesystem access.
+# Verify both the generated disclosure and the actual boundary in a synthetic HOME.
+SANDBOX_HOME="$TMP/sandbox-home"
+SANDBOX_VAULT="$SANDBOX_HOME/AgentMemory"
+mkdir -p "$SANDBOX_VAULT"
+printf 'synthetic readable sentinel\n' > "$SANDBOX_VAULT/direct-read-sentinel"
+printf 'outside sentinel\n' > "$SANDBOX_HOME/LAUNCH.md"
+for unsafe in . ..; do
+  if HOME="$SANDBOX_HOME" "$TOOLS/bin/spine-agent-sandbox" "$unsafe" >/dev/null 2>&1; then
+    fail "agent helper accepted unsafe name: $unsafe"
+  fi
+done
+grep -Fqx 'outside sentinel' "$SANDBOX_HOME/LAUNCH.md" \
+  || fail "agent helper escaped its root through '..'"
+mkdir -p "$SANDBOX_HOME/agent-sandboxes" "$SANDBOX_HOME/outside-target"
+ln -s "$SANDBOX_HOME/outside-target" "$SANDBOX_HOME/agent-sandboxes/symlinked"
+if HOME="$SANDBOX_HOME" "$TOOLS/bin/spine-agent-sandbox" symlinked >/dev/null 2>&1; then
+  fail "agent helper followed a pre-existing sandbox symlink"
+fi
+[ ! -e "$SANDBOX_HOME/outside-target/LAUNCH.md" ] \
+  || fail "agent helper wrote through a sandbox symlink"
+rm "$SANDBOX_HOME/agent-sandboxes/symlinked"
+HOME="$SANDBOX_HOME" SPINE_ROOT="$SANDBOX_VAULT" \
+  "$TOOLS/bin/spine-agent-sandbox" contract-agent >/dev/null
+SANDBOX_BOX="$SANDBOX_HOME/agent-sandboxes/contract-agent"
+grep -Fq 'Spine command access follows the owner-managed default-deny gate' "$SANDBOX_BOX/LAUNCH.md" \
+  || fail "agent helper did not disclose the Spine-mediated gate boundary"
+grep -Fq 'does not block direct filesystem reads or writes' "$SANDBOX_BOX/LAUNCH.md" \
+  || fail "agent helper did not disclose direct filesystem access"
+if grep -Fq 'model = ' "$SANDBOX_BOX/codex-home/config.toml"; then
+  fail "agent helper pinned an environment-specific model"
+fi
+if grep -Fq 'open -a' "$SANDBOX_BOX/LAUNCH.md"; then
+  fail "agent helper advertised a reusable GUI launch with unreliable environment inheritance"
+fi
+if grep -Ev '^[[:space:]]*(#|$)' "$TOOLS/config/agent-allowlist.tsv" | grep -q '^allow[[:space:]]'; then
+  fail "fresh install shipped broad caller allow rules"
+fi
+CODEX_HOME="$SANDBOX_BOX/codex-home" CLAUDE_CONFIG_DIR="$SANDBOX_BOX/claude-home" \
+  python3 - "$SANDBOX_VAULT/direct-read-sentinel" <<'PY'
+from pathlib import Path
+import sys
+if Path(sys.argv[1]).read_text(encoding="utf-8") != "synthetic readable sentinel\n":
+    raise SystemExit("FAIL: direct-read boundary probe did not reach its sentinel")
+PY
+
+AUTH_RECORD="$VAULT/alpha/facts/promotion-authority--01J00000000000000000000007.md"
+cat > "$AUTH_RECORD" <<'EOF'
+---
+type: fact
+project: alpha
+agent: user
+title: Promotion authority transient
+status: active
+created: 2026-08-01T00:00:00Z
+sources:
+  - session:test
+sensitivity: normal
+confidence: candidate
+---
+Synthetic authority probe. [[alpha]]
+EOF
+if HOME="$APPLY_HOME" SPINE_ROOT="$VAULT" SPINE_TOOLS_DIR="$TOOLS" SPINE_NO_GATE=1 \
+  "$TOOLS/bin/spine-promote" "$AUTH_RECORD" --confidence reported --agent user \
+  --reviewed-by-owner --reason "gateless authority bypass" >/dev/null 2>&1; then
+  fail "spine-promote allowed SPINE_NO_GATE to bypass promotion authority"
+fi
+if HOME="$APPLY_HOME" SPINE_ROOT="$VAULT" SPINE_TOOLS_DIR="$TOOLS" \
+  "$TOOLS/bin/spine-promote" "$AUTH_RECORD" --confidence reported --agent user \
+  --reviewed-by-owner --reason "unauthorized test caller" >/dev/null 2>&1; then
+  fail "spine-promote accepted a caller absent from owner-managed policy"
+fi
+rm -f "$AUTH_RECORD"
+
+INVALID_TRUST="$VAULT/alpha/facts/invalid-trust-contract.md"
+cat > "$INVALID_TRUST" <<'EOF'
+---
+type: fact
+project: alpha
+agent: user
+title: Invalid trust contract
+status: archived
+created: 2026-08-01T00:00:00Z
+sources:
+  - session:test
+sensitivity: private
+---
+Synthetic validation probe. [[alpha]]
+EOF
+if SPINE_ROOT="$VAULT" SPINE_TOOLS_DIR="$TOOLS" \
+  "$TOOLS/bin/spine-validate" "$INVALID_TRUST" >"$TMP/missing-trust.out" 2>&1; then
+  fail "spine-validate accepted missing confidence"
+fi
+grep -Fq 'missing core field: confidence' "$TMP/missing-trust.out" \
+  || fail "missing confidence lacked a precise validation error"
+python3 - "$INVALID_TRUST" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+p.write_text(p.read_text().replace("sensitivity: private\n", "sensitivity: private\nconfidence: malformed\n"))
+PY
+if SPINE_ROOT="$VAULT" SPINE_TOOLS_DIR="$TOOLS" \
+  "$TOOLS/bin/spine-validate" "$INVALID_TRUST" >"$TMP/invalid-trust.out" 2>&1; then
+  fail "spine-validate accepted malformed confidence"
+fi
+grep -Fq 'invalid confidence: malformed' "$TMP/invalid-trust.out" \
+  || fail "malformed confidence lacked a precise validation error"
+rm -f "$INVALID_TRUST"
 
 echo "installer-test: PASS"

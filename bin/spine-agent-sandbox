@@ -1,20 +1,16 @@
 #!/bin/bash
-# spine-agent-sandbox — an isolated home for a third-party agent app.
+# spine-agent-sandbox — an isolated configuration home for an agent app.
 #
-# LESSON FROM A REAL INCIDENT (2026-07-28): a third-party desktop app picked up
-# a global agent profile during onboarding and read the memory packet.
-# "Connect a model" inside someone else's app = handing it your ENTIRE
-# Codex/Claude profile (projects, plugins, MCP connectors, sandbox grants —
-# and, through them, memory). An isolated home breaks that inheritance: the
-# app gets a clean profile with no plugins, no connectors and no access to the
-# memory vault.
+# Connecting a model inside another app can inherit a broader agent profile
+# (projects, plugins, MCP connectors, and memories). This helper breaks that
+# configuration inheritance. It is not an OS security boundary and does not
+# block direct filesystem reads or writes allowed by the current user account.
 #
 # Usage:
 #   spine-agent-sandbox <app-name>      # create the home + show how to launch
 #   spine-agent-sandbox --list          # existing sandboxes
 set -u
 ROOT="$HOME/agent-sandboxes"
-MEMORY_ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 
 if [ "${1:-}" = "--list" ]; then
   echo "=== AGENT SANDBOXES ($ROOT)"
@@ -30,13 +26,29 @@ fi
 NAME="${1:-}"
 [ -n "$NAME" ] || { echo "usage: spine-agent-sandbox <app-name> | --list" >&2; exit 1; }
 case "$NAME" in
+  .|..) echo "spine-agent-sandbox: '.' and '..' are not valid names" >&2; exit 1;;
   *[!a-zA-Z0-9._-]*) echo "spine-agent-sandbox: name may contain only a-z 0-9 . _ -" >&2; exit 1;;
 esac
 
 BOX="$ROOT/$NAME"
 CX="$BOX/codex-home"
 CC="$BOX/claude-home"
-mkdir -p "$CX" "$CC" || exit 1
+if [ -L "$ROOT" ]; then
+  echo "spine-agent-sandbox: refusing symlinked root: $ROOT" >&2
+  exit 1
+fi
+mkdir -p "$ROOT" || exit 1
+if [ -e "$BOX" ]; then
+  [ -d "$BOX" ] && [ ! -L "$BOX" ] \
+    || { echo "spine-agent-sandbox: refusing unsafe existing path: $BOX" >&2; exit 1; }
+else
+  mkdir "$BOX" || exit 1
+fi
+for path in "$CX" "$CC" "$BOX/workspace" "$CX/config.toml" "$CC/.claude.json" "$BOX/LAUNCH.md"; do
+  [ ! -L "$path" ] \
+    || { echo "spine-agent-sandbox: refusing symlinked sandbox path: $path" >&2; exit 1; }
+done
+mkdir -p "$CX" "$CC" "$BOX/workspace" || exit 1
 
 # --- Codex: a minimal config. The key part — NO memory vault in writable_roots,
 # no mcp_servers, no plugins; only the app's own working folder.
@@ -46,8 +58,6 @@ cat > "$CX/config.toml" << EOF
 # Do NOT add the memory vault, connectors or plugins here — the whole point of
 # this home is that a third-party app does NOT inherit the owner's working
 # environment.
-model = "gpt-5.6-sol"
-
 [features]
 memories = false
 
@@ -55,42 +65,43 @@ memories = false
 writable_roots = ["$BOX/workspace"]
 EOF
 fi
-mkdir -p "$BOX/workspace"
 
-# --- Claude Code: an empty profile (no MCP; verified 2026-07-28 — with
-# CLAUDE_CONFIG_DIR set it reports "No MCP servers configured" vs 5 in the
-# global profile).
+# --- Claude Code: an empty profile with no configured MCP servers.
 [ -f "$CC/.claude.json" ] || echo '{}' > "$CC/.claude.json"
 
 cat > "$BOX/LAUNCH.md" << EOF
 # Agent sandbox "${NAME}"
 
-Launch the app ONLY with these variables — otherwise it will again see the
-owner's working profile (projects, plugins, connectors, memory):
+Launch a NEW CLI process with these variables — otherwise it will again see
+the owner's working profile (projects, plugins, connectors, memory):
 
-    CODEX_HOME="$CX" CLAUDE_CONFIG_DIR="$CC" open -a "$NAME"
+    env CODEX_HOME="$CX" CLAUDE_CONFIG_DIR="$CC" <agent-cli>
 
-or in a terminal before launching a CLI:
-
-    export CODEX_HOME="$CX"
-    export CLAUDE_CONFIG_DIR="$CC"
+Do not use this helper to relaunch a reusable GUI process: an already-running
+app may ignore the new environment. Quit it fully or use its own profile
+selection controls.
 
 What is inside:
 - codex-home/config.toml — no MCP, no plugins, memories=false,
-  writes only to $BOX/workspace (NOT to $MEMORY_ROOT)
+  with $BOX/workspace as the configured writable root
 - claude-home/ — an empty profile, 0 MCP servers
-- workspace/ — the only folder the app may write to
+- workspace/ — the intended working folder
 
-Memory access: DENIED by default (default-deny gate).
-If this app genuinely needs memory — the owner decides explicitly:
+Security boundary:
+- Spine command access follows the owner-managed default-deny gate. Fresh
+  installs contain no allow rules; upgrades preserve the owner's existing rules.
+- This helper does not block direct filesystem reads or writes. The app and
+  child processes retain whatever filesystem access the OS user permits.
+If this app genuinely needs Spine command access, the owner decides explicitly:
     spine-approve "<path fragment of the app>" "$NAME"
 EOF
 
 echo "Sandbox ready: $BOX"
 echo
-echo "Launch the app like this:"
-echo "  CODEX_HOME=\"$CX\" CLAUDE_CONFIG_DIR=\"$CC\" open -a \"$NAME\""
+echo "Launch a new CLI process like this:"
+echo "  env CODEX_HOME=\"$CX\" CLAUDE_CONFIG_DIR=\"$CC\" <agent-cli>"
 echo
-echo "Memory access for it is DENIED (default-deny gate)."
-echo "Grant it deliberately: spine-approve \"<path fragment>\" \"$NAME\""
+echo "Spine command access follows the owner-managed default-deny gate."
+echo "Direct filesystem access is NOT blocked by this helper."
+echo "Grant Spine command access deliberately: spine-approve \"<path fragment>\" \"$NAME\""
 echo "Details: $BOX/LAUNCH.md"

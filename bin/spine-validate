@@ -35,9 +35,10 @@ def _load_set(name):
 
 PROJECTS = _load_set("projects.txt")
 TYPEDIRS = {"decisions": "decision", "facts": "fact", "threads": "thread", "artifacts": "artifact"}
-CORE = ["type", "project", "agent", "title", "status", "created", "sources", "sensitivity"]
+CORE = ["type", "project", "agent", "title", "status", "created", "sources", "sensitivity", "confidence"]
 STATUS = {"active", "blocked", "resolved", "superseded", "archived"}
 SENS = {"normal", "private", "local_only"}
+CONFIDENCE = {"verified", "reported", "candidate", "legacy", "untrusted"}
 MAX_SIZE = 64 * 1024  # hard guard; the soft body recommendation lives in the README
 
 def is_record(path):
@@ -87,6 +88,8 @@ def validate(path):
         errs.append(f"invalid status: {fm['status']}")
     if fm.get("sensitivity") and fm["sensitivity"] not in SENS:
         errs.append(f"invalid sensitivity: {fm['sensitivity']}")
+    if fm.get("confidence") and fm["confidence"] not in CONFIDENCE:
+        errs.append(f"invalid confidence: {fm['confidence']}")
     if "[[" not in text:
         errs.append("no [[wikilink]] at all (minimum: the project hub)")
     return errs

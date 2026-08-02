@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """spine-promote — sanctioned confidence transition (promotion gate, v3.1 plan, section "confidence").
 
-Raising confidence above candidate is allowed ONLY to: the owner, the
-maintenance loop, or an agent in a session where the owner explicitly
-confirmed the record (--reviewed-by-owner sets reviewed_by/reviewed_at).
+Raising confidence above candidate is allowed only through the owner-managed
+caller gate: the owner, Spine's maintenance chain, or an explicitly approved
+agent session (--reviewed-by-owner sets reviewed_by/reviewed_at).
 This is the ONLY sanctioned editor of confidence on existing records
 (the analog of spine-status for status).
 
@@ -93,6 +93,24 @@ def resolve_target(target: str) -> Path:
     return p
 
 
+def enforce_authority(path: Path, agent: str) -> None:
+    """Promotion is available only through the owner-managed caller policy."""
+    gate_lib = os.path.join(TOOLS, "lib")
+    sys.path.insert(0, gate_lib)
+    try:
+        import spine_gate
+    except ImportError:
+        die(f"authority gate not importable from {gate_lib} — refusing (fail-closed)")
+    project = path.resolve().relative_to(ROOT).parts[0]
+    bypass = os.environ.pop("SPINE_NO_GATE", None)
+    try:
+        if not spine_gate.enforce("promote-confidence", project, agent):
+            die("caller is not authorized by the owner-managed gate")
+    finally:
+        if bypass is not None:
+            os.environ["SPINE_NO_GATE"] = bypass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("target")
@@ -111,6 +129,7 @@ def main():
         die("--reason is empty")
 
     path = resolve_target(a.target)
+    enforce_authority(path, a.agent)
     text = path.read_text(encoding="utf-8", errors="replace")
     m = re.search(r"^confidence:\s*(\S+)\s*$", text, re.M)
     current = m.group(1) if m else "(missing)"

@@ -1,23 +1,16 @@
 """spine_gate — process-ancestry access control for the memory vault.
 
-Origin: a third-party desktop app picked up a global agent profile during
-onboarding and read the memory packet (real incident, 2026-07-28). The app
-inherited a full agent-runtime profile (an ACP runtime, not "just an LLM") and
-with it the spine-* tools; it ran spine-packet and shipped the packet content
-into its own model channel. The owner had agreed to "connect a model" — never
-to expose memory.
-
 Threat model, honestly:
   + catches: agent runtimes and apps that RUN spine-* tools
-    (exactly the incident above; this is the realistic vector for LLM agents)
+    without being present in the owner-managed allowlist
   - does NOT catch: an arbitrary `cat` of vault files by any user process —
     the vault remains a plain directory. That is why rule #1 (never store
     secret VALUES in memory) stays the primary defense, not this gate.
 
-Policy for identified callers with a populated allowlist: unknown caller ->
-refusal, with best-effort logging/notification. Missing caller identity or a
-missing allowlist follows documented fail-open availability branches. This is a
-Spine-tool guardrail, not operating-system access control.
+Policy for identified callers: unknown caller or a missing/empty allowlist ->
+refusal, with best-effort logging/notification. Spine's own tool chain remains
+allowed by executable path. Missing caller identity follows the documented
+availability branch. This is a Spine-tool guardrail, not OS access control.
 """
 import os
 import re
@@ -110,9 +103,8 @@ _NO_SUGGEST = {"zsh", "bash", "sh", "dash", "python", "python3", "node", "env",
 
 def _suggest_pattern(chain):
     """A ready-to-paste pattern for spine-approve instead of a "<path fragment>"
-    placeholder (UX fix 2026-07-30: the owner once received an alert with the
-    literal placeholder and had nothing to copy). The best pattern is the .app
-    bundle name anywhere in the entry (it also catches
+    placeholder. The best pattern is the .app bundle name anywhere in the
+    entry (it also catches
     `node /Applications/SomeAgent.app/.../agent.js`); otherwise the executable
     basename, SKIPPING bare shells/interpreters: suggesting "zsh" = advising
     the owner to open memory to every script in the system."""
@@ -163,8 +155,7 @@ BINDIR = os.path.join(TOOLS, "bin")
 
 def _parent_exe():
     """Executable path of the PARENT without `ps` — the fallback for sandboxes
-    where ps is unavailable (seen with Codex under its seatbelt profile,
-    2026-07-29). libproc.proc_pidpath is always available on macOS."""
+    where ps is unavailable. libproc.proc_pidpath is available on macOS."""
     try:
         import ctypes
         lib = ctypes.CDLL("/usr/lib/libSystem.dylib")
@@ -181,9 +172,8 @@ def _is_own_tool(entry):
     tokens: argv[0] = the executable, argv[1] = the script for an interpreter
     (`/bin/bash .../bin/spine-health`, `/usr/bin/python3 .../bin/spine-recall`).
     A `bash -c "true spine-recall; ..."` bypass does not slip through here:
-    its argv[1] is "-c". Found by an audit on 2026-07-28 — the previous
-    pattern (`allow spine-`) self-authorized anyone who merely ran one of our
-    own tools."""
+    its argv[1] is "-c"; a substring match would self-authorize callers that
+    merely mention one of the tools."""
     for tok in entry.split()[:2]:
         if tok.startswith(BINDIR + "/") or tok.startswith(BINDIR + "\\"):
             return True
@@ -204,23 +194,18 @@ def check(action, scope=None, agent=None):
     hay = " ".join(chain).lower()
     allow, deny = _load_rules()
 
-    # An EMPTY CHAIN is NOT an attacker (bug 2026-07-29: a legitimate agent
-    # running inside its own seatbelt sandbox could not see `ps`, so
-    # caller_chain() returned [] and the agent got DENY as an "unknown
-    # caller"). The caller data is simply MISSING — so decide on an
-    # independent signal: the parent process we can read directly through the
-    # /proc analogue, or, if even that is gone, fall back to the parent
-    # executable path.
+    # An empty chain means caller data is missing, not that the caller is
+    # hostile. Use an independent parent-process signal before applying the
+    # explicit no-chain policy.
     if not chain:
         parent = _parent_exe()
         if parent:
             chain = [parent]
             hay = parent.lower()
         else:
-            # No caller data at all. The trade-off is deliberate: a silent
-            # DENIAL breaks legitimate sandboxed agents (exactly what happened
-            # on 2026-07-29), while a silent allow breaks security. So we
-            # allow, but LOUDLY: a distinct verdict in the log + an owner alert.
+            # No caller data at all. Both silent denial and silent allowance
+            # are unsafe defaults, so allow with a distinct log verdict and an
+            # owner alert.
             _log("ALLOW-NOCHAIN", action, scope, agent, ["(chain unavailable)"],
                  "ps and proc_pidpath unavailable — the caller cannot be identified")
             _alert(f"{action} (caller NOT identified)", scope, agent,
@@ -234,17 +219,19 @@ def check(action, scope=None, agent=None):
             return False, (f"spine: memory access BLOCKED — the caller is denylisted "
                            f"({label}). This is the owner's decision; only the owner can lift it.")
 
-    if not allow:
-        # dictionary missing/empty — do not brick the system, but shout
-        _log("ALLOW-NOLIST", action, scope, agent, chain, "allowlist missing")
-        return True, ""
-
     # Spine's internal chain (spine-backup -> spine-maintain -> ..., keeper,
     # selftest): allowed by the ACTUAL executable path, not by command-line text
     for entry in chain:
         if _is_own_tool(entry):
             _log("ALLOW", action, scope, agent, chain, "Spine's own tool")
             return True, ""
+
+    if not allow:
+        _log("DENY", action, scope, agent, chain, "allowlist missing or empty")
+        _alert(action, scope, agent, chain)
+        return False, ("spine: memory access BLOCKED — the owner allowlist is missing or empty.\n"
+                       "  Spine's own internal tool chain remains available.\n"
+                       "  The owner approves a caller with: spine-approve \"<path fragment>\" \"label\"")
 
     for pattern, label in allow:
         if pattern.lower() in hay:

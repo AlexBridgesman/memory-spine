@@ -52,11 +52,15 @@ jobs:
           tests/test-selftest-isolation.sh
           tests/test-cross-agent-e2e.sh
           tests/test-packet-limits.sh
+          tests/test-packet-delivery.sh
+          tests/test-hook-delivery.sh
+          tests/test-maintain.sh
           python3 tests/test-packet-health.py
           python3 tests/test-recall-synonyms.py
           benchmarks/recall/run.py
           python3 tests/test-website.py
           python3 tests/test-supply-chain.py
+          tests/test-release-archive.sh
 
       - name: Install into a scratch HOME
         run: |

@@ -8,20 +8,30 @@ set -u
 BINDIR="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BINDIR")}"
 . "$TOOLS/lib/spine_paths.sh"
+PYTHON="$(spine_resolve_python 2>/dev/null || true)"
 SPINE_ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 PACKETS="$SPINE_ROOT/_index"
 LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 HOOKLOG="$LOGDIR/hook.log"
 exec 2>>"$HOOKLOG" || exec 2>/dev/null   # errors go to the log, never into the session
 
+if [ -z "$PYTHON" ]; then
+  echo "$(date '+%F %T') CRASH python3 unavailable: SessionStart packet disabled" >> "$HOOKLOG"
+  exit 0
+fi
+
 CWD="$(pwd 2>/dev/null || echo "$HOME")"
 mkdir -p "$LOGDIR/markers" 2>/dev/null
 
 # source from the hook input (stdin JSON): startup|resume|compact|clear
 # (anti-amnesia handling for compaction, 2026-07-22)
-SRC=$(head -c 8192 2>/dev/null | /usr/bin/python3 -c 'import sys,json
+if [ -n "$PYTHON" ]; then
+  SRC=$(head -c 8192 2>/dev/null | "$PYTHON" -c 'import sys,json
 try: print(json.load(sys.stdin).get("source",""))
 except Exception: print("")' 2>/dev/null)
+else
+  SRC=""
+fi
 
 # heartbeat: the hook is alive (for health checks)
 date +%s > "$LOGDIR/.hook-heartbeat" 2>/dev/null
@@ -37,13 +47,13 @@ rm -f "$LOGDIR/markers/inbox-nudge-$PPID" 2>/dev/null
 # inbox-nudge markers: last-fire-<scope> (delta baselines) must NOT be cleaned —
 # rarely-visited scopes would lose their delta.
 find "$LOGDIR/markers" -type f \( -name "session-*" -o -name "inbox-nudge-*" \) -mtime +7 -delete 2>/dev/null
-if [ -f "$HOOKLOG" ] && [ "$(stat -f %z "$HOOKLOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+if [ -f "$HOOKLOG" ] && [ "$(spine_file_size "$HOOKLOG" || echo 0)" -gt 1048576 ]; then
   mv "$HOOKLOG" "$HOOKLOG.1" 2>/dev/null
 fi
 
 # packet resolution is factored into spine-packet (shared with the pull channel
 # used by agents that have no hooks)
-PROJECT=$("$BINDIR/spine-packet" --cwd "$CWD" --resolve 2>>"$HOOKLOG")
+PROJECT=$("$PYTHON" "$BINDIR/spine-packet" --cwd "$CWD" --resolve 2>>"$HOOKLOG")
 RC=$?
 
 if [ "$RC" -ne 0 ]; then
@@ -70,11 +80,26 @@ fi
 # NOT an array: an empty "${arr[@]}" under set -u crashes bash 3.2 (the system /bin/bash)
 EXTRA=""
 [ "$SRC" = "compact" ] && EXTRA="--recent 10"
-if "$BINDIR/spine-packet" --project "$PROJECT" --agent claude-code $EXTRA 2>>"$HOOKLOG"; then
-  echo "$(date '+%F %T') fire${SRC:+ ($SRC)}: $PROJECT <- $CWD" >> "$HOOKLOG"
-  date +%s > "$LOGDIR/.hook-last-fire" 2>/dev/null   # health: "the packet was actually delivered"
+OUT="$LOGDIR/.hook-output-$$"
+PENDING="$LOGDIR/markers/.last-fire-$PROJECT-claude-code.pending.$$"
+LIVE_MARKER="$LOGDIR/markers/last-fire-$PROJECT-claude-code"
+DELIVERED=0
+if "$PYTHON" "$BINDIR/spine-packet" --project "$PROJECT" --agent claude-code \
+    --defer-marker "$PENDING" $EXTRA \
+    >"$OUT" 2>>"$HOOKLOG"; then
+  if [ -s "$OUT" ] && cat "$OUT"; then
+    [ ! -f "$PENDING" ] || mv "$PENDING" "$LIVE_MARKER" 2>>"$HOOKLOG"
+    DELIVERED=1
+    echo "$(date '+%F %T') fire${SRC:+ ($SRC)}: $PROJECT <- $CWD" >> "$HOOKLOG"
+    date +%s > "$LOGDIR/.hook-last-fire" 2>/dev/null
+  else
+    echo "$(date '+%F %T') no-op (packet refused or empty): $PROJECT" >> "$HOOKLOG"
+  fi
+else
+  echo "$(date '+%F %T') CRASH spine-packet delivery: $PROJECT" >> "$HOOKLOG"
 fi
-if [ "$SRC" = "compact" ]; then
+rm -f "$OUT" "$PENDING"
+if [ "$DELIVERED" = 1 ] && [ "$SRC" = "compact" ]; then
   # recovery instructions — part of the context immediately after compaction
   echo ""
   echo "WARNING: COMPACTION JUST HAPPENED. Above: the packet and the latest memory records. Before continuing:"

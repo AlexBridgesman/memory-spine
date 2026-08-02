@@ -35,8 +35,10 @@ if "--network none" not in ci or ':/repo:ro' not in ci:
 for command in (
     "tests/test-installer.sh", "tests/test-paths.sh", "tests/test-selftest-isolation.sh",
     "tests/test-cross-agent-e2e.sh", "tests/test-recall-synonyms.py",
-    "tests/test-packet-limits.sh", "tests/test-packet-health.py",
-    "tests/test-website.py", "benchmarks/recall/run.py",
+    "tests/test-packet-limits.sh", "tests/test-packet-delivery.sh", "tests/test-hook-delivery.sh",
+    "tests/test-maintain.sh",
+    "tests/test-packet-health.py",
+    "tests/test-website.py", "tests/test-release-archive.sh", "benchmarks/recall/run.py",
 ):
     if command not in ci:
         errors.append(f"ci.yml: missing required check {command}")
@@ -47,6 +49,117 @@ for contract in ("pull_request:", "push:", "github.event.pull_request.head.sha")
         errors.append(f"release-integrity.yml: missing exact-candidate contract {contract}")
 if "cd dist && sha256sum --check SHA256SUMS" not in release:
     errors.append("release-integrity.yml: manifest is not verified from its archive directory")
+if "default: v0.1.1" in release:
+    errors.append("release-integrity.yml: manual packaging still defaults to a stale release ref")
+if "description: Exact tag or full commit SHA to package" not in release:
+    errors.append("release-integrity.yml: manual packaging does not require an explicit exact ref")
+if "name: Test extracted archive" not in release:
+    errors.append("release-integrity.yml: packaged archive is not exercised before upload")
+
+builder = (repo / "scripts" / "build-release.sh").read_text(encoding="utf-8")
+for contract in ("RELEASE-METADATA", 'mtime=0', 'gzip.GzipFile(filename=""',
+                 "tar.umask=0022", 'show "$COMMIT:VERSION"'):
+    if contract not in builder:
+        errors.append(f"build-release.sh: deterministic embedded provenance missing {contract}")
+installer = (repo / "install.sh").read_text(encoding="utf-8")
+if '[ -e "$SCRIPT_DIR/.git" ]' not in installer:
+    errors.append("install.sh: extracted archive can inherit provenance from an unrelated parent repository")
+for contract in ('git rev-parse --verify "${RELEASE_REF}^{commit}"',
+                 'CANDIDATE_SHA: ${{ steps.exact.outputs.commit }}',
+                 'HOME="$RUNNER_TEMP/release-home" ./install.sh --apply --yes',
+                 'template_commit: $CANDIDATE_SHA',
+                 'tests/test-installer.sh',
+                 'dev/memory-spine/bin/spine-preflight',
+                 'dev/memory-spine/bin/spine-selftest'):
+    if contract not in release:
+        errors.append(f"release-integrity.yml: extracted install acceptance missing {contract}")
+
+paths = (repo / "lib" / "spine_paths.sh").read_text(encoding="utf-8")
+for contract in ("spine_resolve_python", "SPINE_PYTHON", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
+    if contract not in paths:
+        errors.append(f"spine_paths.sh: shared Python resolver missing {contract}")
+python_consumers = (
+    "spine-sync", "spine-health", "spine-selftest", "spine-preflight", "spine-uninstall",
+    "spine-hook-sessionstart", "spine-hook-stop", "spine-digest", "spine-maintain",
+    "spine-notify", "spine-tg-token",
+)
+for name in python_consumers:
+    script = (repo / "bin" / name).read_text(encoding="utf-8")
+    if "/usr/bin/python3" in script:
+        errors.append(f"{name}: hard-coded system Python remains in the production path")
+    if "spine_resolve_python" not in script:
+        errors.append(f"{name}: shared Python resolver is not used")
+
+session_hook = (repo / "bin" / "spine-hook-sessionstart").read_text(encoding="utf-8")
+if '"$PYTHON" "$BINDIR/spine-packet"' not in session_hook:
+    errors.append("spine-hook-sessionstart: resolved Python is not used for packet launch")
+for name in ("spine-hook-sessionstart", "spine-hook-stop"):
+    script = (repo / "bin" / name).read_text(encoding="utf-8")
+    if "stat -f" in script:
+        errors.append(f"{name}: direct noisy BSD/GNU stat probe remains")
+
+sandbox = (repo / "bin" / "spine-agent-sandbox").read_text(encoding="utf-8")
+if 'model = "gpt-5.6-sol"' in sandbox:
+    errors.append("spine-agent-sandbox: generated config hard-codes an environment-specific model")
+if "does not block direct filesystem reads" not in sandbox:
+    errors.append("spine-agent-sandbox: direct-filesystem-read limitation is not explicit")
+if "Spine command access" not in sandbox:
+    errors.append("spine-agent-sandbox: gate scope is not described as Spine-mediated access")
+for contract in ('.|..)', 'refusing symlinked sandbox path', '<agent-cli>'):
+    if contract not in sandbox:
+        errors.append(f"spine-agent-sandbox: containment/launch contract missing {contract}")
+if "open -a" in sandbox:
+    errors.append("spine-agent-sandbox: reusable GUI launch still overstates environment isolation")
+allowlist = (repo / "config" / "agent-allowlist.tsv").read_text(encoding="utf-8")
+if any(line.startswith("allow\t") for line in allowlist.splitlines()):
+    errors.append("agent-allowlist.tsv: fresh install contains broad allow rules")
+
+packet = (repo / "bin" / "spine-packet").read_text(encoding="utf-8")
+health = (repo / "bin" / "spine-health").read_text(encoding="utf-8")
+if "if not output.strip()" not in packet:
+    errors.append("spine-packet: empty packet is not refused before cursor handling")
+if 'if [ -s "$packet" ]' not in health:
+    errors.append("spine-health: packet completeness accepts zero-byte payloads")
+
+validator = (repo / "bin" / "spine-validate").read_text(encoding="utf-8")
+generator = (repo / "bin" / "spine-gen").read_text(encoding="utf-8")
+promoter = (repo / "bin" / "spine-promote").read_text(encoding="utf-8")
+for name, script in (("spine-validate", validator), ("spine-gen", generator)):
+    if "CONFIDENCE" not in script:
+        errors.append(f"{name}: confidence is not validated fail-closed")
+if 'spine_gate.enforce("promote-confidence"' not in promoter:
+    errors.append("spine-promote: owner-managed caller authority is not enforced")
+
+maintain = (repo / "bin" / "spine-maintain").read_text(encoding="utf-8")
+if '"$PYTHON" "$BIN/spine-gen"' not in maintain or "stat -f %m" in maintain:
+    errors.append("spine-maintain: configured Python/quiet stat contract is missing")
+
+preflight = (repo / "bin" / "spine-preflight").read_text(encoding="utf-8")
+sync = (repo / "bin" / "spine-sync").read_text(encoding="utf-8")
+if "network origin is not permitted" not in preflight or "refusing non-local origin" not in sync:
+    errors.append("preflight/sync: non-local origins are not refused")
+
+# A failed BSD stat probe can print partial GNU output before its non-zero exit;
+# a direct `probe || fallback` therefore contaminates numeric command output.
+noisy_stat_fallback = re.compile(r"stat -f %[mz].*\|\|\s*stat -c %[Ys]")
+for script in sorted((repo / "bin").glob("spine-*")):
+    if noisy_stat_fallback.search(script.read_text(encoding="utf-8", errors="replace")):
+        errors.append(f"{script.name}: noisy BSD/GNU stat fallback is not isolated")
+
+# Public source comments explain generic rationale, not owner-specific incident
+# history, exact private audit dates, or operational anecdotes.
+private_anecdote = re.compile(
+    r"past audit|past incident|found by an audit|audit (?:found|counted)|"
+    r"exactly what happened|owner once|once (?:hung|took|started|received|lived)|"
+    r"20 open|9 of them|over 3 weeks",
+    re.I,
+)
+for directory in (repo / "bin", repo / "lib"):
+    for source in sorted(path for path in directory.iterdir() if path.is_file()):
+        text = source.read_text(encoding="utf-8", errors="replace")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if private_anecdote.search(line):
+                errors.append(f"{source.relative_to(repo)}:{line_no}: private operational anecdote remains")
 
 if errors:
     for error in errors:

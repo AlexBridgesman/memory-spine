@@ -5,6 +5,7 @@ set -euo pipefail
 BIN="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
 ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
+. "$TOOLS/lib/spine_paths.sh"
 APPLY=0
 ASSUME_YES=0
 
@@ -28,9 +29,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
-TOOLS="$(python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$TOOLS")"
-ROOT="$(python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$ROOT")"
+PYTHON="$(spine_resolve_python 2>/dev/null || true)"
+[ -n "$PYTHON" ] || { echo "python3 is required" >&2; exit 1; }
+TOOLS="$("$PYTHON" -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$TOOLS")"
+ROOT="$("$PYTHON" -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$ROOT")"
 case "$TOOLS" in
   /|"$HOME"|"$ROOT") echo "Refusing unsafe tools directory: $TOOLS" >&2; exit 2 ;;
 esac

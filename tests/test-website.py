@@ -122,7 +122,9 @@ for banned in (
     "Any agent that can read files and run shell commands participates",
     "never an edit", "Git keeps everything",
     "Each scope compiles into a ≤14 KB packet", "Кожен scope збирається в packet ≤14 КБ",
-    "Packet ≤14 KB + per-agent delta", "packet</b> (≤14 KB",
+    "Packet ≤14 KB + per-agent delta", "packet</b> (≤14 KB", "packet-&lt;scope&gt;.md</code> (≤14 KB)",
+    "nothing is pushed anywhere", "real incident", "third-party desktop app once",
+    "Pins ride at the top of every packet and never fall out",
 ):
     require(banned.casefold() not in claim_text.casefold(), f"stale public claim remains: {banned}")
 qualified_durability = "Committed history remains available unless history is explicitly rewritten."
@@ -133,9 +135,17 @@ packet_limits_contract = (
     "the 14,000-byte default, and configured values below 4,000 bytes are clamped."
 )
 packet_limits_opt_in = "Copy config/packet-limits.conf.example to that path to opt in."
+delivery_limit_contract = (
+    "The configured cap bounds the complete spine-packet output, including any delta or "
+    "recent-record section."
+)
+pin_contract = (
+    "Pinned records are emitted before other packet records and are never dropped; generation "
+    "fails if all pins cannot fit within the configured cap."
+)
 starvation_contract = (
-    "For scopes with at least 20 eligible records, packet starvation requires both coverage below "
-    "35% and fewer than 55 shipped records; shipping zero facts always alerts."
+    "Only scopes with at least 20 eligible records are evaluated; within that set, packet starvation "
+    "requires both coverage below 35% and fewer than 55 shipped records, while zero shipped facts alerts."
 )
 for surface_name, surface in (
     ("README", readme), ("architecture", architecture),
@@ -143,13 +153,24 @@ for surface_name, surface in (
 ):
     require(packet_limits_contract in surface, f"{surface_name}: packet-limit contract missing")
     require(packet_limits_opt_in in surface, f"{surface_name}: packet-limit opt-in instruction missing")
+    require(delivery_limit_contract in surface, f"{surface_name}: complete delivery cap missing")
+    require(pin_contract in surface, f"{surface_name}: protected-pin contract missing")
     require(starvation_contract in surface, f"{surface_name}: starvation contract missing")
 public_release_text = "\n".join((claim_text, readme, architecture, changelog, spine_gen))
-for banned in ("Born in production", "author's production vault", "164-record", "four scopes capped"):
+for banned in (
+    "Born in production", "author's production vault", "164-record", "four scopes capped",
+    "packet silently starved", "caught during live use",
+):
     require(banned.casefold() not in public_release_text.casefold(),
             f"private or unsupported production claim remains: {banned}")
 require("Backup behavior is opt-in" in index, "backup scheduling is not clearly opt-in")
 require("documented fail-open branches" in machine_docs, "access-gate fail-open behavior is missing")
+require("nothing is pushed to a network or cloud remote" in readme,
+        "local-bare-mirror behavior is not distinguished from network pushes")
+for surface_name, surface in (("README", readme), ("technical", technical), ("machine docs", machine_docs)):
+    require("spine_packet_health.py" in surface, f"{surface_name}: packet health module missing from inventory")
+require("shasum -a 256 -c SHA256SUMS" in readme,
+        "README lacks verified release-archive installation guidance")
 
 # Every translated element must have a Ukrainian dictionary key.
 data_keys = set(re.findall(r'data-i18n="([A-Za-z0-9_]+)"', index))

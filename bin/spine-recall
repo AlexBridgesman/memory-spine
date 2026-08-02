@@ -109,7 +109,7 @@ def main():
     if not a.query and not a.scope and not a.since:
         ap.error("provide a query, or at least --scope / --since")
 
-    # ACCESS GATE (third-party desktop agent incident, 2026-07-28):
+    # ACCESS GATE: identified callers must satisfy the owner-managed policy.
     # memory search is available only to approved callers. A broken/missing
     # gate is FAIL-CLOSED; SPINE_NO_GATE=1 is the explicit opt-out for
     # deliberately gateless installs (one stderr warning, then proceed).
@@ -371,8 +371,8 @@ def main():
     total = len(hits)
     hits = hits[:a.limit]
 
-    # TELEMETRY (2026-07-28): without it, "search keeps missing" stays unprovable —
-    # the 2026-07-28 audit found that over 3 weeks not a single miss was measurable.
+    # Search telemetry makes miss patterns measurable without recording result
+    # bodies; the query is bounded below before it reaches the local log.
     try:
         with open(os.path.join(os.environ.get("SPINE_LOG_DIR", str(default_log_root())), "recall.log"),
                   "a", encoding="utf-8") as lf:

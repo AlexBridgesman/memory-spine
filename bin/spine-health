@@ -28,8 +28,24 @@ if [ -z "$GIT" ]; then
   done
   [ -z "$GIT" ] && GIT="$(command -v git 2>/dev/null || echo git)"
 fi
-# BSD (macOS) stat first, GNU stat as fallback so cron/systemd on Linux works too
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+PYTHON="$(spine_resolve_python 2>/dev/null || true)"
+if [ -z "$PYTHON" ]; then
+  PYTHON=false
+  ALERTS="$ALERTS\n- python3 unavailable -- packet and status health checks are incomplete"
+fi
+# BSD (macOS) stat first, GNU stat as fallback so cron/systemd on Linux works
+# too. Capture the BSD probe: GNU stat can print a filesystem report for one
+# operand before returning non-zero for the other, which must not contaminate
+# the GNU epoch fallback.
+mtime() {
+  local mt
+  if mt=$(stat -f %m "$1" 2>/dev/null); then
+    case "$mt" in ''|*[!0-9]*) ;;
+      *) printf '%s\n' "$mt"; return 0 ;;
+    esac
+  fi
+  stat -c %Y "$1" 2>/dev/null
+}
 
 # 1) the sync/push channel.
 # The old criterion "last push >24h" gave false positives in quiet periods with
@@ -82,12 +98,9 @@ if [ -f "$LOG" ]; then
   sync_mt=$(mtime "$LOG")
   sync_age=$(( (now - sync_mt) / 3600 ))
   if [ $sync_age -gt 2 ]; then
-    # Sleep is NOT a dead channel (every such alert in a past incident streak
-    # was a sleep artifact). Alert only if the silence exceeds 2h AND persists
-    # after wake-up.
-    # Anchor the pattern at the start: a greedy '.*sec = ' also matched
-    # "usec = " ("usec" contains "sec = "), which once defeated the
-    # suppression -- wake_sec picked up microseconds and looked like 1970.
+    # Sleep is not a dead channel. Alert only if silence exceeds two hours and
+    # persists after wake-up. Anchor `sec` at the start so `usec` cannot be
+    # mistaken for the wake epoch.
     wake_sec=$(sysctl -n kern.waketime 2>/dev/null | sed -n 's/^{ *sec = \([0-9][0-9]*\).*/\1/p' | head -1)
     case "$wake_sec" in ''|*[!0-9]*) wake_sec=0 ;; esac
     if [ "$wake_sec" -gt "$sync_mt" ] && [ $(( now - wake_sec )) -le 7200 ]; then
@@ -159,8 +172,8 @@ if [ "$backup_stale" = 1 ]; then
   NOTES="${NOTES:+$NOTES, }${backup_label}"
   NUDGE="$LOGDIR/.last-backup-nudge"
   if [ ! -f "$NUDGE" ] || [ $(( now - $(mtime "$NUDGE") )) -gt 72000 ]; then
-    # Marker BEFORE the send. Lesson: a send once hung for hours, two
-    # processes both passed the cooldown check, and the owner got duplicates.
+    # Write the cooldown marker before sending so concurrent health processes
+    # cannot both pass the check while a send is blocked.
     touch "$NUDGE"
     # SPINE_NO_DEADLETTER: health messages are recomputed on every run -- they
     # do not belong in the dead-letter queue, or the alerts themselves would
@@ -193,21 +206,58 @@ if [ -s "$DL" ]; then
 fi
 # 2b-2) PACKET STARVATION. spine-gen writes post-truncation statistics. For a
 # scope with at least 20 eligible records, low coverage is unhealthy only when
-# BOTH fewer than 35% and fewer than 55 records ship; zero shipped facts always
-# alerts. The classifier is separately tested and malformed statistics fail
+# BOTH fewer than 35% and fewer than 55 records ship; within that eligible set,
+# zero shipped facts alerts. Missing, stale, partial, or malformed snapshots fail
 # visibly instead of disabling this channel with a traceback.
 PSTATS="$ROOT/_index/.packet-stats.tsv"
-if [ -f "$PSTATS" ]; then
-  if ! starved=$(/usr/bin/python3 "$TOOLS_DIR/lib/spine_packet_health.py" --strict "$PSTATS"); then
-    ALERTS="$ALERTS\n- packet statistics invalid or unreadable -- run spine-gen and inspect its warnings"
+PDICT="$ROOT/config/projects.txt"
+[ -f "$PDICT" ] || PDICT="$TOOLS_DIR/config/projects.txt"
+packet_stats_ok=1
+if [ ! -f "$PSTATS" ] || [ ! -f "$PDICT" ]; then
+  packet_stats_ok=0
+else
+  stats_mtime=$(mtime "$PSTATS" || echo 0)
+  case "$stats_mtime" in ''|*[!0-9]*) packet_stats_ok=0 ;;
+    *)
+      packet_input_newer=0
+      [ "$stats_mtime" -gt $((now + 300)) ] && packet_stats_ok=0
+      for input in "$PDICT" "$ROOT/config/packet-limits.conf" "$TOOLS_DIR/config/packet-limits.conf"; do
+        [ -f "$input" ] || continue
+        [ "$input" -nt "$PSTATS" ] && packet_input_newer=1
+      done
+      while IFS= read -r project; do
+        case "$project" in ''|[[:space:]]*'#'*) continue ;; esac
+        packet="$ROOT/_index/packet-$project.md"
+        if [ -s "$packet" ]; then
+          [ "$packet" -nt "$PSTATS" ] && packet_input_newer=1
+        else
+          packet_stats_ok=0
+        fi
+        for typed in decisions facts threads artifacts; do
+          record_dir="$ROOT/$project/$typed"
+          [ -d "$record_dir" ] || continue
+          if find "$record_dir" -type f -name '*.md' -newer "$PSTATS" -print -quit 2>/dev/null | grep -q .; then
+            packet_input_newer=1
+          fi
+        done
+      done < "$PDICT"
+      [ "$packet_input_newer" -eq 1 ] && packet_stats_ok=0
+      ;;
+  esac
+fi
+if [ "$packet_stats_ok" -eq 1 ]; then
+  if ! starved=$("$PYTHON" "$TOOLS_DIR/lib/spine_packet_health.py" --strict --projects "$PDICT" "$PSTATS"); then
+    packet_stats_ok=0
   elif [ -n "$starved" ]; then
     ALERTS="$ALERTS\n- packet starving: $starved -- set config/packet-limits.conf for the affected scope or archive/supersede stale records"
   fi
 fi
+if [ "$packet_stats_ok" -eq 0 ]; then
+  ALERTS="$ALERTS\n- packet statistics missing, stale, incomplete, or unreadable -- run spine-gen and inspect its warnings"
+fi
 
-# 2c) Dead maintenance loop (a past audit found 5a/5b had not run for weeks,
-# unnoticed). spine-backup writes .last-maintain after each successful 5a+5b;
-# here: alert when it is older than 8 days.
+# 2c) Dead maintenance loop. spine-backup writes .last-maintain only after a
+# successful 5a+5b chain; alert when it is older than eight days.
 MMARK="$LOGDIR/.last-maintain"
 mm_src=0
 [ -f "$MMARK" ] && mm_src=$(cat "$MMARK" 2>/dev/null || echo 0)
@@ -233,7 +283,7 @@ cd "$ROOT" 2>/dev/null && {
     fi
     mt=$(mtime "$f")
     [ $(( (now - mt) / 3600 )) -gt 24 ] && ALERTS="$ALERTS\n- uncommitted for >24h: $f"
-  done < <("$GIT" status --porcelain -z -uall -- '*.md' | /usr/bin/python3 -c '
+  done < <("$GIT" status --porcelain -z -uall -- '*.md' | "$PYTHON" -c '
 import sys
 items = sys.stdin.buffer.read().split(b"\0")
 i = 0
@@ -281,7 +331,7 @@ if [ -n "$fresh_session" ] && [ -f "$HB" ]; then
     lf_age_d=$(( (now - $(mtime "$LASTFIRE")) / 86400 ))
     [ "$lf_age_d" -gt 3 ] && ALERTS="$ALERTS\n- sessions running, heartbeat alive, but the packet has NOT been delivered for ${lf_age_d} days (cwd map? packet files?)"
   else
-    NOTES="${NOTES:+$NOTES, }hook-fire-marker-absent"
+    ALERTS="$ALERTS\n- sessions running and heartbeat alive, but the packet delivery marker is missing"
   fi
 fi
 

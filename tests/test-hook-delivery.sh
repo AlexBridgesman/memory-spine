@@ -18,22 +18,28 @@ fail() {
   exit 1
 }
 
-cat > "$TOOLS/bin/spine-packet" <<'EOF'
+REAL_PYTHON=$(command -v python3)
+cat > "$TOOLS/fake-python" <<EOF
 #!/bin/sh
-case " $* " in
-  *' --resolve '*) printf 'alpha\n'; exit 0 ;;
-esac
-if [ "${SPINE_PACKET_MODE:-refuse}" = deliver ]; then
-  printf 'verified packet delivery\n'
-fi
+printf 'used\n' >> "${TMP}/python-used"
+exec "$REAL_PYTHON" "\$@"
 EOF
-chmod +x "$TOOLS/bin/spine-packet"
+chmod +x "$TOOLS/fake-python"
+cat > "$TOOLS/bin/spine-packet" <<'EOF'
+import os
+import sys
+if "--resolve" in sys.argv:
+    print("alpha")
+elif os.environ.get("SPINE_PACKET_MODE", "refuse") == "deliver":
+    print("verified packet delivery")
+EOF
+chmod 644 "$TOOLS/bin/spine-packet"
 
 run_hook() {
   mode="$1"
   printf '{"source":"startup"}\n' | (
     cd "$TMP/work"
-    HOME="$TMP/home" SPINE_PACKET_MODE="$mode" SPINE_ROOT="$VAULT" \
+    HOME="$TMP/home" SPINE_PYTHON="$TOOLS/fake-python" SPINE_PACKET_MODE="$mode" SPINE_ROOT="$VAULT" \
       SPINE_TOOLS_DIR="$TOOLS" SPINE_LOG_DIR="$LOGS" \
       "$TOOLS/bin/spine-hook-sessionstart"
   )
@@ -47,6 +53,7 @@ if grep -Fq ' fire' "$LOGS/hook.log"; then
 fi
 
 run_hook deliver > "$TMP/delivered.out"
+[ -s "$TMP/python-used" ] || fail "SessionStart did not use SPINE_PYTHON for spine-packet"
 grep -Fqx 'verified packet delivery' "$TMP/delivered.out" \
   || fail "verified packet bytes were not emitted"
 [ -f "$LOGS/.hook-last-fire" ] || fail "verified delivery did not update evidence"

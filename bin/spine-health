@@ -230,6 +230,8 @@ else
         packet="$ROOT/_index/packet-$project.md"
         if [ -f "$packet" ]; then
           [ "$packet" -nt "$PSTATS" ] && packet_input_newer=1
+        else
+          packet_stats_ok=0
         fi
         for typed in decisions facts threads artifacts; do
           record_dir="$ROOT/$project/$typed"
@@ -329,7 +331,7 @@ if [ -n "$fresh_session" ] && [ -f "$HB" ]; then
     lf_age_d=$(( (now - $(mtime "$LASTFIRE")) / 86400 ))
     [ "$lf_age_d" -gt 3 ] && ALERTS="$ALERTS\n- sessions running, heartbeat alive, but the packet has NOT been delivered for ${lf_age_d} days (cwd map? packet files?)"
   else
-    NOTES="${NOTES:+$NOTES, }hook-fire-marker-absent"
+    ALERTS="$ALERTS\n- sessions running and heartbeat alive, but the packet delivery marker is missing"
   fi
 fi
 

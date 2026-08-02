@@ -321,6 +321,20 @@ agent: user
 ---
 Synthetic promoted record.
 EOF
+cat > "$SUPER_VAULT/alpha/facts/untrusted-reviewed--01J00000000000000000000003.md" <<'EOF'
+---
+type: fact
+title: Untrusted reviewed content
+summary: Review metadata must not bypass the untrusted auto-injection boundary.
+status: active
+sensitivity: normal
+confidence: untrusted
+reviewed_by: owner
+created: 2026-08-01T00:00:30Z
+agent: user
+---
+Synthetic external content.
+EOF
 write_replacement() {
   confidence="$1"
   cat > "$REPLACEMENT" <<EOF
@@ -343,6 +357,9 @@ SPINE_ROOT="$SUPER_VAULT" SPINE_TOOLS_DIR="$SUPER_TOOLS" \
   "$SUPER_TOOLS/bin/spine-gen" >/dev/null
 grep -Fq 'Promoted current knowledge' "$SUPER_VAULT/_index/packet-alpha.md" \
   || fail "candidate replacement hid promoted current knowledge"
+if grep -Fq 'Untrusted reviewed content' "$SUPER_VAULT/_index/packet-alpha.md"; then
+  fail "reviewed_by bypassed the untrusted packet boundary"
+fi
 if grep -Fq 'Replacement knowledge' "$SUPER_VAULT/_index/packet-alpha.md"; then
   fail "candidate replacement bypassed the packet promotion gate"
 fi

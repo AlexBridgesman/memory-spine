@@ -59,6 +59,7 @@ jobs:
           benchmarks/recall/run.py
           python3 tests/test-website.py
           python3 tests/test-supply-chain.py
+          tests/test-release-archive.sh
 
       - name: Install into a scratch HOME
         run: |

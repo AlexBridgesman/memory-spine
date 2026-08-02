@@ -28,6 +28,8 @@ jobs:
       - name: Verify manifest
         run: cd dist && sha256sum --check SHA256SUMS
       - name: Test extracted archive
+        env:
+          RELEASE_REF: ${{ github.event.pull_request.head.sha || inputs.ref || github.sha }}
         run: |
           set -euo pipefail
           archive="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
@@ -44,6 +46,12 @@ jobs:
           python3 tests/test-recall-synonyms.py
           python3 tests/test-website.py
           python3 tests/test-supply-chain.py
+          scripts/ci-install-gitleaks.sh "$RUNNER_TEMP/bin"
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          mkdir "$RUNNER_TEMP/release-home"
+          HOME="$RUNNER_TEMP/release-home" ./install.sh --apply --yes >/dev/null
+          grep -Fqx -- "- template_commit: $RELEASE_REF" \
+            "$RUNNER_TEMP/release-home/AgentMemory/PROVENANCE.md"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: memory-spine-release-integrity

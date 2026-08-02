@@ -245,6 +245,9 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
     (root / "config" / "projects.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     (tools / "config" / "projects.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     stats = root / "_index" / ".packet-stats.tsv"
+    packets = [root / "_index" / "packet-alpha.md", root / "_index" / "packet-beta.md"]
+    for packet in packets:
+        packet.write_text("synthetic packet\n", encoding="utf-8")
     env = os.environ.copy()
     env.update({
         "HOME": str(home),
@@ -273,6 +276,8 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
                 for dictionary in (root / "config" / "projects.txt",
                                    tools / "config" / "projects.txt"):
                     os.utime(dictionary, (old - 10, old - 10))
+                for packet in packets:
+                    os.utime(packet, (old - 10, old - 10))
                 if source_newer:
                     source.write_text("synthetic packet input\n", encoding="utf-8")
                     os.utime(source, (old + 10, old + 10))
@@ -316,6 +321,12 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
     require("packet statistics missing, stale, incomplete, or unreadable" in health_log,
             "missing statistics did not alert")
 
+    packets[1].unlink()
+    proc, health_log = run_health(b"alpha\t20\t20\t1\nbeta\t20\t20\t1\n")
+    require("packet statistics missing, stale, incomplete, or unreadable" in health_log,
+            "complete statistics with a missing packet did not alert")
+    packets[1].write_text("synthetic packet\n", encoding="utf-8")
+
     proc, health_log = run_health(b"alpha\t20\t20\t1\nbeta\t20\t20\t1\n", stale=True)
     require("packet statistics missing, stale, incomplete, or unreadable" not in health_log,
             "quiet unchanged vault rejected an old but current statistics snapshot")
@@ -330,4 +341,12 @@ with tempfile.TemporaryDirectory(prefix="memory-spine-health-integration.") as t
     )
     require("packet statistics missing, stale, incomplete, or unreadable" in health_log,
             "future-dated statistics did not alert")
+    session = home / ".claude" / "projects" / "active.jsonl"
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text("{}\n", encoding="utf-8")
+    (logs / ".hook-heartbeat").write_text(str(int(time.time())), encoding="utf-8")
+    (logs / ".hook-last-fire").unlink(missing_ok=True)
+    proc, health_log = run_health(b"alpha\t20\t20\t1\nbeta\t20\t20\t1\n")
+    require("packet delivery marker is missing" in health_log,
+            "active sessions without a delivery marker did not alert")
 print("packet-health-test: PASS")

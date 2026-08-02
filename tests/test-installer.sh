@@ -198,6 +198,22 @@ echo "$NO_MIRROR_OUT" | grep -Fq "Mirror:      disabled" || fail "--no-mirror pl
 if echo "$NO_MIRROR_OUT" | grep -Fq "only remote is a bare mirror"; then
   fail "--no-mirror printed a false mirror success claim"
 fi
+HOME="$NO_MIRROR_HOME" "$NO_MIRROR_HOME/dev/memory-spine/bin/spine-preflight" >/dev/null \
+  || fail "--no-mirror install failed preflight"
+HOME="$NO_MIRROR_HOME" "$NO_MIRROR_HOME/dev/memory-spine/bin/spine-sync" \
+  || fail "--no-mirror local-only sync failed"
+
+# --no-git-init is an explicit non-sync mode: preflight succeeds and sync is a
+# truthful no-op instead of entering a broken Git chain.
+NO_GIT_HOME="$TMP/no-git-home"
+mkdir -p "$NO_GIT_HOME"
+HOME="$NO_GIT_HOME" "$REPO/install.sh" --apply --yes --no-git-init --no-mirror \
+  --projects alpha --agents agent-one,user >/dev/null
+[ ! -e "$NO_GIT_HOME/AgentMemory/.git" ] || fail "--no-git-init created a Git repository"
+HOME="$NO_GIT_HOME" "$NO_GIT_HOME/dev/memory-spine/bin/spine-preflight" >/dev/null \
+  || fail "--no-git-init install failed preflight"
+HOME="$NO_GIT_HOME" "$NO_GIT_HOME/dev/memory-spine/bin/spine-sync" \
+  || fail "--no-git-init sync was not a clean no-op"
 
 # The agent helper isolates configuration profiles, not OS filesystem access.
 # Verify both the generated disclosure and the actual boundary in a synthetic HOME.

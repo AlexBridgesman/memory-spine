@@ -37,7 +37,7 @@ for command in (
     "tests/test-cross-agent-e2e.sh", "tests/test-recall-synonyms.py",
     "tests/test-packet-limits.sh", "tests/test-packet-delivery.sh", "tests/test-hook-delivery.sh",
     "tests/test-packet-health.py",
-    "tests/test-website.py", "benchmarks/recall/run.py",
+    "tests/test-website.py", "tests/test-release-archive.sh", "benchmarks/recall/run.py",
 ):
     if command not in ci:
         errors.append(f"ci.yml: missing required check {command}")
@@ -56,12 +56,17 @@ if "name: Test extracted archive" not in release:
     errors.append("release-integrity.yml: packaged archive is not exercised before upload")
 
 builder = (repo / "scripts" / "build-release.sh").read_text(encoding="utf-8")
-for contract in ("RELEASE-METADATA", 'mtime=0', 'gzip.GzipFile(filename=""'):
+for contract in ("RELEASE-METADATA", 'mtime=0', 'gzip.GzipFile(filename=""',
+                 "tar.umask=0022", 'show "$COMMIT:VERSION"'):
     if contract not in builder:
         errors.append(f"build-release.sh: deterministic embedded provenance missing {contract}")
 installer = (repo / "install.sh").read_text(encoding="utf-8")
 if '[ -e "$SCRIPT_DIR/.git" ]' not in installer:
     errors.append("install.sh: extracted archive can inherit provenance from an unrelated parent repository")
+for contract in ('HOME="$RUNNER_TEMP/release-home" ./install.sh --apply --yes',
+                 'template_commit: $RELEASE_REF'):
+    if contract not in release:
+        errors.append(f"release-integrity.yml: extracted install acceptance missing {contract}")
 
 paths = (repo / "lib" / "spine_paths.sh").read_text(encoding="utf-8")
 for contract in ("spine_resolve_python", "SPINE_PYTHON", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
@@ -78,6 +83,14 @@ for name in python_consumers:
         errors.append(f"{name}: hard-coded system Python remains in the production path")
     if "spine_resolve_python" not in script:
         errors.append(f"{name}: shared Python resolver is not used")
+
+session_hook = (repo / "bin" / "spine-hook-sessionstart").read_text(encoding="utf-8")
+if '"$PYTHON" "$BINDIR/spine-packet"' not in session_hook:
+    errors.append("spine-hook-sessionstart: resolved Python is not used for packet launch")
+for name in ("spine-hook-sessionstart", "spine-hook-stop"):
+    script = (repo / "bin" / name).read_text(encoding="utf-8")
+    if "stat -f" in script:
+        errors.append(f"{name}: direct noisy BSD/GNU stat probe remains")
 
 sandbox = (repo / "bin" / "spine-agent-sandbox").read_text(encoding="utf-8")
 if 'model = "gpt-5.6-sol"' in sandbox:

@@ -27,7 +27,7 @@ if [ "${INBOX_N:-0}" -gt 0 ] && [ ! -f "$INBOX_MARKER" ]; then
 fi
 
 # 2) a long session with no records at all — nudge
-AGE=$(( $(date +%s) - $(stat -f %m "$MARKER" 2>/dev/null || date +%s) ))
+AGE=$(( $(date +%s) - $(spine_file_mtime "$MARKER" || date +%s) ))
 if [ "$AGE" -ge 600 ]; then
   NEW=$(find "$ROOT" \( -path "*/decisions/*" -o -path "*/facts/*" -o -path "*/threads/*" -o -path "*/artifacts/*" \) -name "*.md" -newer "$MARKER" 2>/dev/null | head -1)
   if [ -z "$NEW" ]; then

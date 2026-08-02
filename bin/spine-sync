@@ -232,6 +232,11 @@ if [ -x "$BIN/spine-preflight" ]; then
   fi
 fi
 
+if [ ! -d "$ROOT/.git" ]; then
+  log "noop: Git initialization disabled; nothing to commit or push"
+  exit 0
+fi
+
 cd "$ROOT" || exit 1
 
 # Health-check insurance. Lesson: health used to be invoked ONLY from the

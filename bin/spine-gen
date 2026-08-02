@@ -144,6 +144,7 @@ def in_packet(r):
         # the coordination channel passes the gate, BUT untrusted (external content)
         # never rides the auto-injection (design v3.1, Security rule 1)
         return r.get("confidence") != "untrusted"
+    if r.get("confidence") == "untrusted": return False
     if r.get("reviewed_by"): return True
     return r.get("confidence") in ("reported", "verified")
 

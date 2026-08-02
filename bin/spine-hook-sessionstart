@@ -15,6 +15,11 @@ LOGDIR="${SPINE_LOG_DIR:-$(spine_default_log_root)}"
 HOOKLOG="$LOGDIR/hook.log"
 exec 2>>"$HOOKLOG" || exec 2>/dev/null   # errors go to the log, never into the session
 
+if [ -z "$PYTHON" ]; then
+  echo "$(date '+%F %T') CRASH python3 unavailable: SessionStart packet disabled" >> "$HOOKLOG"
+  exit 0
+fi
+
 CWD="$(pwd 2>/dev/null || echo "$HOME")"
 mkdir -p "$LOGDIR/markers" 2>/dev/null
 
@@ -42,13 +47,13 @@ rm -f "$LOGDIR/markers/inbox-nudge-$PPID" 2>/dev/null
 # inbox-nudge markers: last-fire-<scope> (delta baselines) must NOT be cleaned —
 # rarely-visited scopes would lose their delta.
 find "$LOGDIR/markers" -type f \( -name "session-*" -o -name "inbox-nudge-*" \) -mtime +7 -delete 2>/dev/null
-if [ -f "$HOOKLOG" ] && [ "$(stat -f %z "$HOOKLOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+if [ -f "$HOOKLOG" ] && [ "$(spine_file_size "$HOOKLOG" || echo 0)" -gt 1048576 ]; then
   mv "$HOOKLOG" "$HOOKLOG.1" 2>/dev/null
 fi
 
 # packet resolution is factored into spine-packet (shared with the pull channel
 # used by agents that have no hooks)
-PROJECT=$("$BINDIR/spine-packet" --cwd "$CWD" --resolve 2>>"$HOOKLOG")
+PROJECT=$("$PYTHON" "$BINDIR/spine-packet" --cwd "$CWD" --resolve 2>>"$HOOKLOG")
 RC=$?
 
 if [ "$RC" -ne 0 ]; then
@@ -79,7 +84,7 @@ OUT="$LOGDIR/.hook-output-$$"
 PENDING="$LOGDIR/markers/.last-fire-$PROJECT-claude-code.pending.$$"
 LIVE_MARKER="$LOGDIR/markers/last-fire-$PROJECT-claude-code"
 DELIVERED=0
-if "$BINDIR/spine-packet" --project "$PROJECT" --agent claude-code \
+if "$PYTHON" "$BINDIR/spine-packet" --project "$PROJECT" --agent claude-code \
     --defer-marker "$PENDING" $EXTRA \
     >"$OUT" 2>>"$HOOKLOG"; then
   if [ -s "$OUT" ] && cat "$OUT"; then

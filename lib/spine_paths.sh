@@ -43,3 +43,19 @@ spine_resolve_python() {
   done
   return 1
 }
+
+spine_stat_value() {
+  local bsd_fmt="$1" gnu_fmt="$2" path="$3" value
+  if value=$(stat -f "$bsd_fmt" "$path" 2>/dev/null); then
+    case "$value" in ''|*[!0-9]*) ;;
+      *) printf '%s\n' "$value"; return 0 ;;
+    esac
+  fi
+  value=$(stat -c "$gnu_fmt" "$path" 2>/dev/null) || return 1
+  case "$value" in ''|*[!0-9]*) return 1 ;;
+    *) printf '%s\n' "$value" ;;
+  esac
+}
+
+spine_file_mtime() { spine_stat_value %m %Y "$1"; }
+spine_file_size() { spine_stat_value %z %s "$1"; }

@@ -8,8 +8,12 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
 COMMIT=$(git -C "$ROOT" rev-parse --verify "${REF}^{commit}")
 TREE=$(git -C "$ROOT" rev-parse --verify "${COMMIT}^{tree}")
-VERSION=$(git -C "$ROOT" describe --tags --always "$COMMIT")
-SAFE_VERSION=$(printf '%s' "$VERSION" | tr -c 'A-Za-z0-9._-' '-')
+# Archive identity is a pure function of tracked commit content, not refs added
+# later or repository-specific abbreviation settings.
+VERSION=$(git -C "$ROOT" show "$COMMIT:VERSION" 2>/dev/null | tr -d '\r\n')
+printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$' \
+  || { echo "invalid or missing VERSION at $COMMIT" >&2; exit 1; }
+SAFE_VERSION="$VERSION"
 ARCHIVE="memory-spine-${SAFE_VERSION}.tar.gz"
 PREFIX="memory-spine-${SAFE_VERSION}/"
 mkdir -p "$OUT"
@@ -17,7 +21,8 @@ OUT=$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$OUT")
 TMP_TAR=$(mktemp "${TMPDIR:-/tmp}/memory-spine-release.XXXXXX.tar")
 trap 'rm -f "$TMP_TAR"' EXIT INT TERM HUP
 
-git -C "$ROOT" archive --format=tar --prefix="$PREFIX" --output="$TMP_TAR" "$COMMIT"
+git -C "$ROOT" -c tar.umask=0022 archive --format=tar --prefix="$PREFIX" \
+  --output="$TMP_TAR" "$COMMIT"
 python3 - "$TMP_TAR" "$OUT/$ARCHIVE" "$PREFIX" "$COMMIT" "$TREE" "$VERSION" <<'PY'
 import gzip
 import io

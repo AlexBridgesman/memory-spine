@@ -6,8 +6,6 @@ ROOT="${SPINE_ROOT:-$HOME/AgentMemory}"
 BIN="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="${SPINE_TOOLS_DIR:-$(dirname "$BIN")}"
 . "$TOOLS/lib/spine_paths.sh"
-REMOTE_ROOT="${SPINE_REMOTE_ROOT:-$(spine_default_remote_root)}"
-PRIMARY_BARE="${SPINE_AGENT_BARE:-$REMOTE_ROOT/AgentMemory.git}"
 # Optional marker file proving the external backup volume is mounted
 # (e.g. /Volumes/YourBackupDisk/AgentMemoryBackup/.mounted). Empty = not configured.
 BACKUP_MARKER="${SPINE_BACKUP_MARKER:-}"
@@ -27,17 +25,21 @@ if [ -z "$GIT" ]; then
 fi
 PYTHON="$(spine_resolve_python 2>/dev/null || true)"
 
-[ -n "$GIT" ] && [ -x "$GIT" ] || { echo "PREFLIGHT FAIL: git missing"; FAIL=1; }
 [ -n "$PYTHON" ] || { echo "PREFLIGHT FAIL: python3 missing"; FAIL=1; }
 command -v rsync >/dev/null 2>&1 || { echo "PREFLIGHT FAIL: rsync missing"; FAIL=1; }
 [ -n "$GITLEAKS" ] && [ -x "$GITLEAKS" ] || { echo "PREFLIGHT FAIL: gitleaks missing — fail-closed"; FAIL=1; }
-[ -d "$ROOT/.git" ] || { echo "PREFLIGHT FAIL: $ROOT is not a git repo"; FAIL=1; }
-[ -d "$PRIMARY_BARE" ] || { echo "PREFLIGHT FAIL: primary bare mirror unavailable: $PRIMARY_BARE"; FAIL=1; }
+if [ ! -d "$ROOT/.git" ]; then
+  echo "PREFLIGHT INFO: Git initialization disabled; sync is a no-op"
+  exit "$FAIL"
+fi
+if [ -z "$GIT" ] || [ ! -x "$GIT" ]; then
+  echo "PREFLIGHT FAIL: git missing"
+  exit 1
+fi
 
 REMOTE_URL=$("$GIT" -C "$ROOT" remote get-url origin 2>/dev/null || true)
 if [ -z "$REMOTE_URL" ]; then
-  echo "PREFLIGHT FAIL: $ROOT has no origin remote"
-  FAIL=1
+  echo "PREFLIGHT INFO: no origin remote; sync will commit locally without pushing"
 elif [[ "$REMOTE_URL" == /Volumes/* ]]; then
   # A removable volume as origin means every unmount silently breaks sync
   echo "PREFLIGHT FAIL: origin still points at a removable volume: $REMOTE_URL"
